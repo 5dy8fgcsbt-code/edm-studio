@@ -42,7 +42,7 @@ DCS 专用灯光、法线/效果着色器、环境反射、损伤和其他材质
 
 CLI 支持 inspect、export、analyze、catalog、livery，以及 --livery、--context、--baseline、--bort、--static、--duration、--textures、--no-textures。`native/fetch-deps.ps1` 可重新获取固定版本依赖。原 Python 实现保留用于开发对照，原生运行和构建均不调用它。打包脚本输出版本目录及Windows/source ZIP；源码ZIP对应本地Git的HEAD，打包前应提交源代码。
 
-0.8.0 增加 OBJ / FBX 原生导出测试。F-100D 的 OBJ 涂装及 F-100D、F-14 的 FBX 骨骼动画均已在 Blender 4.2.20 回读；FBX 另用独立 ufbx 读取器对照源模型坐标。F-14 VF-103 完整涂装的嵌入图片也已验证。操作与格式限制见[导出格式说明](docs/EXPORT_FORMATS.md)。
+0.8.0 的 13 组回归、32,695 项检查通过。F-100D 的 OBJ 涂装及 F-100D、F-14 的 FBX 骨骼动画均已在 Blender 4.2.20 回读；F-14 全部 221 个 FBX 参数片段另用独立 ufbx 读取器对照源模型，1,106 个姿态、约 1,382 万顶点样本通过，最大位置误差约 `2.08e-6 m`。F-14 VF-103 完整涂装的嵌入图片也已验证。操作与格式限制见[导出格式说明](docs/EXPORT_FORMATS.md)。
 
 原有测试覆盖工程原图保存、跨 ZIP 贴图、表面贴花、跨画布事务、自动覆盖、局部 UV 栅格及异步轨迹。F100 完成默认 2 GB 下的 2K 贴花、编辑前后切换和工程重开验证；F14 实测 1/2/100 GB 预算及设置持久化。相机移动不重建投射深度图或模型几何；先前绘制工程双动画 GLB 通过 Khronos 校验（0 错误、0 警告）。各版本检查数量、精度及性能结果见[原生验证](docs/NATIVE_VALIDATION.md)，问题和限制见[无人值守报告](docs/UNATTENDED_REPORT.md)。
 
