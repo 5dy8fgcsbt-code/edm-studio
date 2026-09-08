@@ -25,6 +25,8 @@ The previous binary EDM reader was adapted from DCS-EDM-Blender-Importer by devo
 
 Format research consulted https://ndevenish.github.io/Blender_ioEDM/EDM_Specification.html and the public Blender_ioEDM / BlenderEdmExporter repositories. Research checkouts are not distributed.
 
+The independent FBX validation tests use ufbx 0.23.0 under its MIT alternative (Copyright (c) 2020 Samuli Raivio), pinned to commit fcc5d6ba444cfd3eb80677dba5e37e493941abe5. Unmodified source, complete license and hashes are in native/vendor/ufbx. It is linked only to the test executable, never to the application or CLI. The FBX writer is original C++ code and does not use the Autodesk FBX SDK, Assimp or Blender as a runtime dependency.
+
 The preserved legacy Python reference uses Python (PSF), NumPy (BSD), PySide6/Shiboken6/Qt (LGPLv3/GPLv3/commercial), PyOpenGL (BSD), Pillow (MIT-CMU), and Lupa/Lua (MIT). Existing license texts remain in licenses/. These are development/legacy dependencies, not part of the native runtime.
 
 No DCS game models, textures, executables or DLLs are redistributed. samples/animation_demo.edm and native/tests/fixtures are original synthetic test data. This project is not affiliated with Eagle Dynamics.

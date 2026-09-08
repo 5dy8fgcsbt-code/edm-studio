@@ -1,10 +1,10 @@
-#include "export.h"
+#include "export_internal.h"
 #include <iomanip>
 #include <sstream>
 namespace edm {
 namespace {
 struct Builder {
-    Json doc = {{"asset", {{"version", "2.0"}, {"generator", "EDM Studio C++ 0.4.0"}}},
+    Json doc = {{"asset", {{"version", "2.0"}, {"generator", "EDM Studio C++ " EDM_NATIVE_VERSION}}},
                 {"scene", 0},
                 {"scenes", Json::array({{{"nodes", Json::array()}}})},
                 {"nodes", Json::array()},
@@ -109,16 +109,14 @@ void appendU32(std::vector<uint8_t>& bytes, uint32_t n) {
         bytes.push_back(uint8_t(n >> (8 * i)));
 }
 } // namespace
-Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& options, Progress progress,
-                 const std::atomic_bool* cancel) {
+ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& options, Progress progress,
+                                 const std::atomic_bool* cancel) {
     auto start = Clock::now();
     auto check = [&] {
         if (cancel && *cancel)
             throw std::runtime_error("Cancelled");
     };
     require(std::isfinite(options.duration) && options.duration > 0, "Animation duration must be positive");
-    auto extension = lower(pathString(path.extension()));
-    require(extension == ".glb" || extension == ".gltf", "Export format must be .glb or .gltf");
     std::vector<int> arguments;
     if (options.arguments)
         arguments = *options.arguments;
@@ -530,18 +528,31 @@ Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& 
     d["extras"] = {{"edm_studio", extra}};
     d["buffers"] = Json::array({{{"byteLength", b.data.size()}}});
     check();
+    return {std::move(d), std::move(b.data), std::move(report)};
+}
+Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& options, Progress progress,
+                 const std::atomic_bool* cancel) {
+    auto extension = lower(pathString(path.extension()));
+    if (extension == ".obj")
+        return exportObjScene(scene, path, options, std::move(progress), cancel);
+    if (extension == ".fbx")
+        return exportFbxScene(scene, path, options, std::move(progress), cancel);
+    require(extension == ".glb" || extension == ".gltf", "Export format must be .glb, .gltf, .obj or .fbx");
+    auto payload = buildExportPayload(scene, options, std::move(progress), cancel);
+    auto& d = payload.document;
+    auto& data = payload.buffer;
     std::vector<uint8_t> output;
     if (extension == ".gltf") {
-        d["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64(b.data);
+        d["buffers"][0]["uri"] = "data:application/octet-stream;base64," + base64(data);
         auto text = d.dump();
         output.assign(text.begin(), text.end());
     } else {
         auto json = d.dump();
         while (json.size() % 4)
             json.push_back(' ');
-        while (b.data.size() % 4)
-            b.data.push_back(0);
-        size_t length = 28 + json.size() + b.data.size();
+        while (data.size() % 4)
+            data.push_back(0);
+        size_t length = 28 + json.size() + data.size();
         require(length <= 0xffffffff, "GLB exceeds 4 GB format limit");
         output.reserve(length);
         appendU32(output, 0x46546c67);
@@ -550,14 +561,14 @@ Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& 
         appendU32(output, uint32_t(json.size()));
         appendU32(output, 0x4e4f534a);
         output.insert(output.end(), json.begin(), json.end());
-        appendU32(output, uint32_t(b.data.size()));
+        appendU32(output, uint32_t(data.size()));
         appendU32(output, 0x004e4942);
-        output.insert(output.end(), b.data.begin(), b.data.end());
+        output.insert(output.end(), data.begin(), data.end());
     }
     writeFile(path, output);
     auto reportPath = path;
     reportPath.replace_extension(L".report.json");
-    writeJson(reportPath, report);
-    return report;
+    writeJson(reportPath, payload.report);
+    return payload.report;
 }
 } // namespace edm

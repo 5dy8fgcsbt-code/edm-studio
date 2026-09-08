@@ -56,6 +56,7 @@ std::string compactNumber(size_t n) {
 double previewBudgetGB(double value) {
     return std::isfinite(value) ? std::clamp(value, .25, 100.) : 2.;
 }
+constexpr const wchar_t* exportExtensions[]{L"glb", L"gltf", L"obj", L"fbx"};
 std::optional<fs::path> dialog(HWND hwnd, bool save, bool folder, const wchar_t* title,
                                const wchar_t* extension = L"edm", const wchar_t* initial = nullptr) {
     Com<IFileDialog> d;
@@ -68,17 +69,23 @@ std::optional<fs::path> dialog(HWND hwnd, bool save, bool folder, const wchar_t*
     d->SetOptions(opts | FOS_FORCEFILESYSTEM | (folder ? FOS_PICKFOLDERS : 0));
     d->SetTitle(title);
     if (!folder) {
-        COMDLG_FILTERSPEC filters[2];
+        COMDLG_FILTERSPEC filters[4];
         UINT count = 1;
         if (std::wstring_view(extension) == L"edm")
             filters[0] = {L"DCS 模型 (*.edm)", L"*.edm"};
         else if (save) {
             filters[0] = {L"GLB 单文件模型 (*.glb)", L"*.glb"};
             filters[1] = {L"glTF 嵌入式模型 (*.gltf)", L"*.gltf"};
-            count = 2;
+            filters[2] = {L"OBJ 当前姿态 + MTL 贴图 (*.obj)", L"*.obj"};
+            filters[3] = {L"FBX 模型与动画 (*.fbx)", L"*.fbx"};
+            count = 4;
         } else
             filters[0] = {L"DCS 涂装 (description.lua; *.zip)", L"*.lua;*.zip"};
         d->SetFileTypes(count, filters);
+        if (save && count == 4)
+            for (UINT i = 0; i < 4; ++i)
+                if (std::wstring_view(extension) == exportExtensions[i])
+                    d->SetFileTypeIndex(i + 1);
         d->SetDefaultExtension(extension);
         if (initial)
             d->SetFileName(initial);
@@ -147,7 +154,7 @@ class App {
     Json settings = Json::object(), luaContext = Json::object();
     std::string contextText = "{}", error, notice = "拖入 EDM 文件，开始查看模型", argSearch, liverySearch,
                 bortText, log;
-    int selectedArg = -1, exportMode = 0, rightTab = 0, textureQuality = 2;
+    int selectedArg = -1, exportMode = 0, exportFormat = 0, rightTab = 0, textureQuality = 2;
     double textureBudgetGB = 2, textureBudgetInputGB = 2;
     std::optional<double> initialTextureBudget;
     fs::path diagnosticSettings;
@@ -261,6 +268,10 @@ class App {
             if ((*it)->finished) {
                 if ((*it)->thread.joinable())
                     (*it)->thread.join();
+                if ((*it)->kind == "export" && (*it)->cancel) {
+                    exporting = false;
+                    notice = "导出任务已停止";
+                }
                 it = jobs.erase(it);
             } else
                 ++it;
@@ -281,6 +292,7 @@ class App {
                     extraRoots.emplace_back(wide(p.get<std::string>()));
             textureDir = wide(settings.value("texture_directory", ""));
             textureQuality = std::clamp(settings.value("texture_quality", 2), 0, 3);
+            exportFormat = std::clamp(settings.value("export_format", 0), 0, 3);
             if (auto budget = settings.find("texture_budget_gb");
                 budget != settings.end() && budget->is_number())
                 textureBudgetGB = previewBudgetGB(budget->get<double>());
@@ -300,6 +312,7 @@ class App {
                 settings["extra_roots"].push_back(pathString(p));
             settings["texture_directory"] = pathString(textureDir);
             settings["texture_quality"] = textureQuality;
+            settings["export_format"] = exportFormat;
             settings["texture_budget_gb"] = textureBudgetGB;
             settings["left_width"] = leftWidth;
             settings["right_width"] = rightWidth;
@@ -676,22 +689,27 @@ class App {
         if (!renderer.model || exporting)
             return;
         require(!paint.busy(), "绘制任务尚未完成，请稍后导出");
-        auto filename = currentPath.stem().wstring() + L".glb";
-        auto path = dialog(hwnd, true, false, L"导出模型与动画", L"glb", filename.c_str());
+        auto extension = exportExtensions[exportFormat];
+        auto filename = currentPath.stem().wstring() + L"." + extension;
+        auto path = dialog(hwnd, true, false, L"导出模型与动画", extension, filename.c_str());
         if (!path)
             return;
+        for (int i = 0; i < 4; ++i)
+            if (lower(pathString(path->extension())) == "." + utf8(exportExtensions[i]))
+                exportFormat = i;
         ExportOptions options;
         options.duration = duration;
         options.textures = exportTextures;
         options.textureDirectory = textureDir;
         options.livery = livery;
         options.baseline = args;
-        if (exportMode == 1) {
-            if (selectedArg < 0)
-                return;
-            options.arguments = std::vector<int>{selectedArg};
-        } else if (exportMode == 2)
+        const bool staticObj = lower(pathString(path->extension())) == ".obj";
+        if (staticObj || exportMode == 2)
             options.arguments = std::vector<int>{};
+        else if (exportMode == 1) {
+            require(selectedArg >= 0, "请先在左侧选择要导出的动画参数");
+            options.arguments = std::vector<int>{selectedArg};
+        }
         auto scene = renderer.model->scene;
         auto painted = paint.snapshot();
         exporting = true;
@@ -699,6 +717,8 @@ class App {
             "export",
             [scene, path, options, painted](Progress progress, const std::atomic_bool* cancel) mutable {
                 for (auto& [material, image] : painted) {
+                    if (!options.textures)
+                        break;
                     require(!*cancel, "Cancelled");
                     progress("编码绘制材质 " + std::to_string(material));
                     options.diffuseOverrides[material] = image->pngBytes();
@@ -970,17 +990,36 @@ class App {
         mutedText("可输入 0.25–100 GB，回车或点击应用。\n预算是加载上限，按实际贴图占用；导出不受此限制。");
     }
     void exportPanel() {
-        title("通用模型导出", "GLB / glTF 2.0");
-        const char* modes[]{"全部参数动画", "仅当前参数动画", "当前姿态（静态）"};
+        title("通用模型导出", "GLB · glTF · OBJ · FBX");
+        const char* formats[]{"GLB · 单文件", "glTF · 嵌入式", "OBJ · 静态模型", "FBX · 模型与动画"};
+        mutedText("文件格式");
         ImGui::SetNextItemWidth(-1);
-        ImGui::Combo("##exportmode", &exportMode, modes, 3);
+        if (ImGui::Combo("##exportformat", &exportFormat, formats, 4))
+            saveSettings();
+        const bool staticObj = exportFormat == 2;
+        const char* modes[]{"全部参数动画", "仅当前参数动画", "当前姿态（静态）"};
+        ImGui::BeginDisabled(staticObj);
+        ImGui::SetNextItemWidth(-1);
+        int displayedMode = staticObj ? 2 : exportMode;
+        if (ImGui::Combo("##exportmode", &displayedMode, modes, 3))
+            exportMode = displayedMode;
         space();
         mutedText("每个动画片段的时长");
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputFloat("##duration", &duration, .5f, 1.f, "%.1f 秒"))
             duration = std::clamp(duration, .1f, 120.f);
-        ImGui::Checkbox("嵌入贴图、RoughMet 与编号", &exportTextures);
+        ImGui::EndDisabled();
+        ImGui::Checkbox("导出贴图与当前涂装", &exportTextures);
         space(12);
+        ImGui::BeginDisabled(!renderer.model || exporting);
+        if (primary(exporting ? "正在导出…" : staticObj ? "导出当前姿态" : "导出模型与动画", {-1, 44}))
+            exportDialog();
+        ImGui::EndDisabled();
+        if (exporting && ImGui::Button("取消导出", {-1, 34})) {
+            cancelKind("export");
+            notice = "正在停止导出…";
+        }
+        space(8);
         if (ImGui::Button("指定额外贴图目录", {-1, 36})) {
             if (auto p = dialog(hwnd, false, true, L"选择贴图目录")) {
                 textureDir = *p;
@@ -992,18 +1031,17 @@ class App {
         space(12);
         ImGui::Separator();
         space(12);
-        mutedText("起落架、舵面和座舱盖使用原始参数范围；每段动画会复位其他参数，避免姿态残留。");
-        space();
-        mutedText("蒙皮与可见性保留到通用文件，动态编号转为离散动画。DCS 专用着色器效果会记录在导出报告中。");
-        space(16);
-        ImGui::BeginDisabled(!renderer.model || exporting);
-        if (primary(exporting ? "正在导出…" : "导出模型与动画", {-1, 44}))
-            exportDialog();
-        ImGui::EndDisabled();
-        if (exporting && ImGui::Button("取消导出", {-1, 34})) {
-            cancelKind("export");
-            exporting = false;
-            notice = "已取消导出";
+        if (staticObj) {
+            mutedText(
+                "保存当前姿态与编号。\nOBJ 不包含动画或骨骼。\n移动文件时，请同时携带 MTL\n和贴图文件夹。");
+        } else {
+            mutedText("按原始范围导出参数动画。\n每段动画将其他参数固定在\n导出时的当前姿态。");
+            space();
+            mutedText("保留蒙皮与可见性。\n动态编号转为离散动画。\n各软件对材质的显示可能不同。");
+        }
+        if (exportFormat == 3) {
+            space();
+            mutedText("FBX 嵌入颜色与透明贴图。\nRoughMet 作为资源保留，\n导入后可能需要手动连接。");
         }
     }
     void infoPanel() {
@@ -1562,6 +1600,7 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
     App app;
     active = &app;
     fs::path initial;
+    std::optional<int> initialExportFormat;
     int windowWidth = 1600, windowHeight = 980;
     for (int i = 1; i < argc; i++) {
         std::wstring key = argv[i];
@@ -1575,7 +1614,13 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
             app.capturePath = value();
         else if (key == L"--metrics")
             app.metricsPath = value();
-        else if (key == L"--benchmark")
+        else if (key == L"--export-panel") {
+            auto format = value();
+            for (int f = 0; f < 4; ++f)
+                if (format == exportExtensions[f])
+                    initialExportFormat = f;
+            require(initialExportFormat.has_value(), "Expected glb, gltf, obj or fbx for --export-panel");
+        } else if (key == L"--benchmark")
             app.benchmarkFrames = std::stoi(value());
         else if (key == L"--verify-gpu")
             app.verifyGPU = true;
@@ -1677,6 +1722,10 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
     } else
         require(app.autoPaintImage.empty(), "--auto-paint-image requires --auto-paint-test");
     app.restore();
+    if (initialExportFormat) {
+        app.exportFormat = *initialExportFormat;
+        app.rightTab = 1;
+    }
     if (app.initialTextureBudget) {
         app.textureBudgetInputGB = *app.initialTextureBudget;
         app.applyTextureBudget();

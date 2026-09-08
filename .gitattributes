@@ -2,3 +2,4 @@
 /native/vendor/eigen/** -text
 /third_party_sources/eigen-3.4.0/** -text
 /third_party_sources/eigen-3.4.0.sha256.json -text
+/native/vendor/ufbx/** -text

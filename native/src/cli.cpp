@@ -13,7 +13,7 @@ int wmain(int argc, wchar_t** argv) {
                 "Usage: edm-native-cli inspect|export|analyze|catalog|livery model.edm [--output path] "
                 "[--args 0,3,9] [--baseline 0=1,3=0] [--bort 123] [--livery path] [--context "
                 "JSON] [--textures dir] [--extra dir] [--no-textures] [--static] [--duration 3] "
-                "[--dump-world path]");
+                "[--dump-world path]. Export extensions: .glb, .gltf, .obj (current static pose), .fbx");
         std::string command = utf8(argv[1]);
         fs::path source = argv[2], output, dump, liveryPath;
         std::string bort;

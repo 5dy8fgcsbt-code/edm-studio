@@ -1,6 +1,6 @@
-# EDM Studio Native 0.7.3
+# EDM Studio Native 0.8.0
 
-Windows 原生 C++20 / Dear ImGui / Direct3D 11 桌面程序。直接打开 DCS EDM v8/v10，预览参数动画、涂装、RoughMet 和动态编号，导出 GLB / glTF 2.0。运行时不需要 Python、Qt、DCS、Blender 或网络。
+Windows 原生 C++20 / Dear ImGui / Direct3D 11 桌面程序。直接打开 DCS EDM v8/v10，预览参数动画、涂装、RoughMet 和动态编号，导出 GLB / glTF 2.0 / OBJ / FBX。运行时不需要 Python、Qt、DCS、Blender 或网络。
 
 ## 使用
 
@@ -11,13 +11,13 @@ Windows 原生 C++20 / Dear ImGui / Direct3D 11 桌面程序。直接打开 DCS 
 - 左/右键旋转，中键平移，滚轮缩放；F 适应视图，F11 聚焦视口。
 - Ctrl+O 打开，Ctrl+E 导出，空格播放所选参数。
 - 画面下方“浏览已编辑的涂装”可对照原图；编辑与撤销记录保留，保存/导出仍包含绘制结果。新版工程保留原始颜色贴图，重开也能对照。
-- 涂装面板可设置机身编号、动态 Lua JSON 变量；导出面板设置全部参数 / 当前参数 / 当前静态姿态、时长和贴图。
+- 涂装面板可设置机身编号、动态 Lua JSON 变量；导出面板先选格式，再设置全部参数 / 当前参数 / 当前静态姿态、时长和贴图。OBJ 自动保存静态姿态，FBX 支持动画。详见[导出格式说明](docs/EXPORT_FORMATS.md)。
 - 预览贴图上限可选 1024/2048/4096/8192，预算默认 2 GB。在“涂装 → 贴图质量”输入 0.25–100 GB，回车或点击“应用贴图预算”，自动保存并重新选择预览 mip。预览设置不影响导出；未编辑贴图保持原始分辨率，绘制贴图按画布实际分辨率输出。
 - 设置保存在 EXE 同目录的 `edm-studio.settings.json`。原创示例见 `samples/animation_demo.edm`。
 
 ## 动画与材质
 
-EDM 参数范围转换为每参数独立的时间片段，默认 3 秒。保留负参数、层级、定向缩放、四元数、8 权重蒙皮和逆绑定矩阵。每段动画将其他参数固定为导出时的当前值（含涂装 custom_args 和编号），静态模式保存当前组合姿态。
+GLB / glTF / FBX 将 EDM 参数范围转换为每参数独立的时间片段，默认 3 秒。保留负参数、层级、定向缩放、旋转、8 权重蒙皮和逆绑定矩阵；FBX 对四元数旋转自适应采样为连续欧拉曲线。每段动画将其他参数固定为导出时的当前值（含涂装 custom_args 和编号），静态模式保存当前组合姿态。OBJ 将变形固定在顶点上，仅保存静态模型。
 
 RoughMet 的 R/G/B 对应环境遮蔽/粗糙度/金属度。NumberNode 编号图集转换为标准 STEP 显隐节点。动态 Lua 使用内嵌 Lua 5.4.8 的独立子进程，支持函数、循环、条件及目录范围内的 dofile/require；内存、指令和 5 秒时间上限防止错误配置阻塞界面。
 
@@ -36,11 +36,15 @@ DCS 专用灯光、法线/效果着色器、环境反射、损伤和其他材质
 ./build/native/Release/EDM-Studio-Native.exe
 ./build/native/Release/edm-native-cli.exe inspect 'path/to/model.edm'
 ./build/native/Release/edm-native-cli.exe export 'path/to/model.edm' --output 'model.glb' --args 0,9,10,38
+./build/native/Release/edm-native-cli.exe export 'path/to/model.edm' --output 'model.fbx' --args 0,9,10,38
+./build/native/Release/edm-native-cli.exe export 'path/to/model.edm' --output 'model.obj' --baseline 0=1,38=1
 ```
 
 CLI 支持 inspect、export、analyze、catalog、livery，以及 --livery、--context、--baseline、--bort、--static、--duration、--textures、--no-textures。`native/fetch-deps.ps1` 可重新获取固定版本依赖。原 Python 实现保留用于开发对照，原生运行和构建均不调用它。打包脚本输出版本目录及Windows/source ZIP；源码ZIP对应本地Git的HEAD，打包前应提交源代码。
 
-0.7.2的11组原生测试、1350项检查通过，包含工程原图保存、跨ZIP贴图、表面贴花、跨画布事务、自动覆盖、局部UV栅格及异步轨迹。F100完成默认2GB下的2K贴花、编辑前后切换和工程重开验证；F14实测1/2/100GB预算及设置持久化。此前F14、F100的2K图片画笔、撤销顺序及GPU像素回读均通过，相机移动不重建投射深度图或模型几何。F100的Panter涂装跨ZIP机翼引用已实际复现并修复，先前绘制工程双动画GLB通过Khronos校验（0错误、0警告）。各精度、范围及性能结果见[原生验证](docs/NATIVE_VALIDATION.md)，问题和限制见[无人值守报告](docs/UNATTENDED_REPORT.md)。旧版的F/A-18C、C-130动画及Blender回读记录仍保留。
+0.8.0 增加 OBJ / FBX 原生导出测试。F-100D 的 OBJ 涂装及 F-100D、F-14 的 FBX 骨骼动画均已在 Blender 4.2.20 回读；FBX 另用独立 ufbx 读取器对照源模型坐标。F-14 VF-103 完整涂装的嵌入图片也已验证。操作与格式限制见[导出格式说明](docs/EXPORT_FORMATS.md)。
+
+原有测试覆盖工程原图保存、跨 ZIP 贴图、表面贴花、跨画布事务、自动覆盖、局部 UV 栅格及异步轨迹。F100 完成默认 2 GB 下的 2K 贴花、编辑前后切换和工程重开验证；F14 实测 1/2/100 GB 预算及设置持久化。相机移动不重建投射深度图或模型几何；先前绘制工程双动画 GLB 通过 Khronos 校验（0 错误、0 警告）。各版本检查数量、精度及性能结果见[原生验证](docs/NATIVE_VALIDATION.md)，问题和限制见[无人值守报告](docs/UNATTENDED_REPORT.md)。
 
 ## 许可证与随附源码
 
@@ -62,7 +66,7 @@ CLI 支持 inspect、export、analyze、catalog、livery，以及 --livery、--c
 
 新画布分辨率上限默认2K，可选4K或8K；切换设置不会重采样已经编辑的画布。可预载PNG/DDS/TGA/JPG等平面模板，下一次落笔位置决定模板对应的贴图，替换的是整张漫反射贴图。有未保存编辑时，替换前先写恢复备份。添加局部图案时使用“贴花”或“相机投影”。PSD图层需先导出平面PNG。
 
-“保存工程与DCS涂装”在所选目录中新建完整文件夹，含PNG工程、带mip的DDS、依赖贴图与description.lua；可将其放入正确机型的Liveries目录，也可在本软件重新导入。GLB/glTF导出包含当前绘制结果。未保存编辑在切换模型/关闭前写入EXE旁PaintRecovery恢复工程；保存失败会保留窗口。恢复工程通过“打开绘制工程”读取。
+“保存工程与DCS涂装”在所选目录中新建完整文件夹，含PNG工程、带mip的DDS、依赖贴图与description.lua；可将其放入正确机型的Liveries目录，也可在本软件重新导入。GLB、glTF、OBJ 和 FBX 的贴图导出均包含当前绘制结果。未保存编辑在切换模型/关闭前写入EXE旁PaintRecovery恢复工程；保存失败会保留窗口。恢复工程通过“打开绘制工程”读取。
 
 绘制自动定位漫反射贴图，动态编号图集由编号功能控制，不参与绘画。同名且引用相同漫反射资源的材质别名共用画布；重叠/共用UV仍会联动。若导入的工程含无法用DCS材质名区分的不同图片，完整涂装保存会报告冲突。视口只更新贴图脏区，相机移动不重建拾取结构或模型顶点。遮挡按几何判断，不计算透明贴图孔洞。
 
