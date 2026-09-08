@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>EDM Studio aircraft icon</title>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#2B4160"/>
+  <rect x="10" y="10" width="236" height="236" rx="50" fill="#101C30"/>
+  <polygon fill="#59BFFF" points="128,35 141,97 209,151 209,168 145,148 145,179 169,201 169,214 128,200 87,214 87,201 111,179 111,148 47,168 47,151 115,97"/>
+  <polygon fill="#C9F0FF" points="128,35 141,97 209,151 209,168 145,148 145,179 169,201 169,214 128,200"/>
+</svg>

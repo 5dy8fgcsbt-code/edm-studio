@@ -1,0 +1,19 @@
+Use case: ui-mockup
+Asset type: one high-fidelity desktop application design preview, wide 16:10 landscape, ideally 1920x1200.
+Primary request: a polished, plausible Windows desktop EDM model viewer and animation exporter, named "EDM Studio", proposed C++ + WinUI 3 interface. This is a flat straight-on screenshot-style design concept, not a photo of a monitor or a physical scene.
+Visual style: sophisticated Windows 11 Fluent design, graphite dark mode, restrained azure blue accents, subtle Mica titlebar, elegant rounded corners, crisp Segoe-like Chinese sans-serif typography, excellent alignment, generous internal spacing. Professional 3D content tool that feels native and carefully crafted. Avoid neon, excessive cards, decorative gauges and excessive data density.
+Layout:
+- Slim native titlebar reading "EDM Studio", Windows minimize/maximize/close icons on the far right. Small subdued badge "界面设计预览".
+- Compact command bar below: "打开模型", "f-14b.edm", view controls, prominent blue "导出 GLB" button toward right.
+- Left hierarchy pane around 220px wide titled "模型层级", with search field and simple nested tree rows: "F-14B", "机身", "左机翼", "右机翼", "起落架", "座舱盖". The selected row "起落架" has a tasteful blue selection bar.
+- Central dominant 3D viewport, occupying most of the screen, contains a highly realistic detailed light grey F-14B Tomcat aircraft, viewed from slightly elevated forward port three-quarter perspective with nose pointing toward left front. Show twin tails, variable sweep wings, fully lowered nose and main landing gear, and canopy clearly raised/open. Plane sits visually over a subtle graphite modelling grid, studio soft lighting and tasteful contact shadow. Aircraft fits completely inside viewport with comfortable margins. It is a realistic model preview, no outdoor scene. Small viewport label "F-14B Tomcat". Tiny simple orientation axes in the lower right.
+- Right pane around 290px wide: active tab "动画", secondary tab "材质". Section title "动画参数". Three clean labeled parameter controls with thin blue sliders and compact numeric value fields:
+  "起落架" with small secondary label "参数 0 / 3 / 5" and value "1.00";
+  "座舱盖" with small secondary label "参数 38" and value "1.00";
+  "机翼后掠" with small secondary label "参数 50" and value "0.20".
+  Small "重置" button.
+  Lower section "导出设置", format dropdown "GLB", options "包含动画" and "嵌入贴图" checked, blue full-width button "导出模型".
+- Bottom timeline pane aligned under central viewport (not beneath sidebars if practical), title "动画时间轴", play/pause and reset transport icons, restrained ticks at 0, 1, 2, 3 seconds, a blue playhead around 1.5 seconds, three clean rows labeled "起落架", "座舱盖", "机翼后掠" with a few blue diamond keyframes and fine tracks.
+- Thin statusbar at bottom, "模型已加载", "798 个网格", "221 个动画参数".
+Text constraints: Chinese captions above must be correct, legible, and minimal; English only for EDM Studio, F-14B Tomcat, filename, and GLB. Do not fill UI with fake microtext or repeated random labels.
+Output constraints: one cohesive full application window screenshot, no collage, no inset zooms, no extra marketing heading, no surrounding wallpaper, no watermark. Fine restrained borders and shadows. The grey F-14 model should be the clear visual focus.

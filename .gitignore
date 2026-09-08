@@ -1,0 +1,11 @@
+.venv/
+.npm-cache/
+__pycache__/
+*.pyc
+build/
+dist/
+release/
+research/
+tools/gltf-check/node_modules/
+validation/
+*.blend
