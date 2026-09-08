@@ -374,7 +374,7 @@ Json exportObjScene(const Scene& scene, const fs::path& path, const ExportOption
             << "\nKs 0 0 0\nNs 0\nd " << color[3] << "\nillum 2\n";
         if (!maps.first.empty())
             mtl << "map_Kd " << maps.first << '\n';
-        if (!maps.second.empty())
+        if (!maps.second.empty() && (number || materialAlphaMode(material) != MaterialAlphaMode::Opaque))
             mtl << "map_d " << maps.second << '\n';
         materials[key] = name;
         return name;

@@ -460,6 +460,11 @@ void numberTests(const fs::path& directory) {
             diffusePreserved |= bytes == options.diffuseOverrides[0];
             atlasPreserved |= bytes == atlasBytes;
         }
+        for (auto* video : imported->videos) {
+            const auto& original = options.diffuseOverrides[0];
+            diffusePreserved |= video->content.size == original.size() &&
+                                std::memcmp(video->content.data, original.data(), original.size()) == 0;
+        }
         check(diffusePreserved && atlasPreserved,
               "number atlas and edited base texture resources are both retained");
         Json reference = {{"fbx", pathString(path)},
@@ -811,8 +816,10 @@ void tests(const fs::path& directory) {
     const auto png = image.pngBytes();
     textured.diffuseOverrides[0] = png;
     const auto texturePath = directory / "edited-texture.fbx";
-    exportScene(rigid, texturePath, textured);
-    validate(rigid, texturePath, textured);
+    auto alphaTextured = rigid;
+    alphaTextured.materials[0].blending = 1;
+    exportScene(alphaTextured, texturePath, textured);
+    validate(alphaTextured, texturePath, textured);
     auto textureScene = load(texturePath);
     auto* meshNode = importedMesh(rigid, rigid.meshes[0], *textureScene);
     require(meshNode->materials.count != 0, "FBX fixture material connection");

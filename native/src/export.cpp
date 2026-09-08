@@ -222,8 +222,12 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
                       {"edm_uniforms", m.uniforms},
                       {"edm_animated_uniforms", m.animatedUniforms},
                       {"edm_textures", textures}}}};
-        if ((m.blending >= 1 && m.blending <= 4) || color[3] < .999f)
+        if (materialAlphaMode(m) == MaterialAlphaMode::Blend)
             mat["alphaMode"] = "BLEND";
+        else if (materialAlphaMode(m) == MaterialAlphaMode::Mask) {
+            mat["alphaMode"] = "MASK";
+            mat["alphaCutoff"] = .5;
+        }
         if (resolver) {
             auto edited = options.diffuseOverrides.find(i);
             int diffuse = edited == options.diffuseOverrides.end()

@@ -2,7 +2,7 @@
 static constexpr const char* ModelShader = R"HLSL(
 cbuffer Frame:register(b0){row_major float4x4 viewProjection;row_major float4x4 inverseVP;float4 eyeExposure;float4 settings;float4 ground;};
 cbuffer SurfaceDecal:register(b1){row_major float4x4 surfaceDecalVP;float4 surfaceCenterWidth;float4 surfaceRightHeight;float4 surfaceUpDepth;float4 surfaceNormalOpacity;float4 surfaceOptions;float4 surfaceShadowSettings;};
-struct Mesh{uint transform;uint skinned;uint number;uint pad;float4 color;uint blending;uint decal;uint twoSided;uint material;};
+struct Mesh{uint transform;uint skinned;uint number;uint pad;float4 color;uint alphaMode;uint decal;uint twoSided;uint material;};
 struct Pose{row_major float4x4 world;row_major float4x4 normal;};
 StructuredBuffer<Mesh> meshes:register(t0);StructuredBuffer<Pose> poses:register(t1);StructuredBuffer<float4> numberOffsets:register(t2);
 Texture2D diffuseMap:register(t3);Texture2D roughMap:register(t4);Texture2D decalMap:register(t5);SamplerState texSampler:register(s0);
@@ -44,8 +44,10 @@ float4 surfacePreview(float4 base,Output i){
  return base;
 }
 float3 tone(float3 c){c*=eyeExposure.w;return saturate((c*(2.51*c+.03))/(c*(2.43*c+.59)+.14));}
+// Keep source texture alpha through paint compositing; ignore it only for final OPAQUE coverage.
+// alphaMode matches MaterialAlphaMode: Opaque=0, Mask=1, Blend=2. Number atlases retain their own cutoff.
 float4 PS(Output i,bool front:SV_IsFrontFace):SV_Target{Mesh mesh=meshes[i.mesh];float4 base=mesh.color;bool textureOn=settings.x>.5;if(textureOn){float4 tex=diffuseMap.Sample(texSampler,i.uv);uint tw,th;diffuseMap.GetDimensions(tw,th);if(tw>1||th>1)base.rgb=tex.rgb; base.a*=tex.a;if(mesh.decal){base=decalMap.Sample(texSampler,i.decalUV);clip(base.a-.1);}}
- if(textureOn)base=surfacePreview(base,i);if(base.a<.025)discard;float3 N=normalize(i.normal);if(mesh.twoSided&&!front)N=-N;float3 V=normalize(eyeExposure.xyz-i.world);float3 orm=settings.y>.5&&textureOn?roughMap.Sample(texSampler,i.roughUV).rgb:float3(1,.65,0);float roughness=clamp(orm.g,.08,1),metal=saturate(orm.b);float3 F0=lerp(.04.xxx,base.rgb,metal);float3 result=base.rgb*(1-metal)*lerp(.18,.42,saturate(N.y*.5+.5))*orm.r;float3 light[3]={normalize(float3(-.6,1,-.4)),normalize(float3(.6,.35,.7)),normalize(float3(.25,-.4,-.8))};float3 colors[3]={float3(2.6,2.5,2.35),float3(.65,.82,1.1),float3(.22,.25,.3)};
+ if(textureOn)base=surfacePreview(base,i);if(!mesh.decal&&mesh.alphaMode==0)base.a=1;else if(!mesh.decal&&mesh.alphaMode==1){clip(base.a-.5);base.a=1;}else if(base.a<.025)discard;float3 N=normalize(i.normal);if(mesh.twoSided&&!front)N=-N;float3 V=normalize(eyeExposure.xyz-i.world);float3 orm=settings.y>.5&&textureOn?roughMap.Sample(texSampler,i.roughUV).rgb:float3(1,.65,0);float roughness=clamp(orm.g,.08,1),metal=saturate(orm.b);float3 F0=lerp(.04.xxx,base.rgb,metal);float3 result=base.rgb*(1-metal)*lerp(.18,.42,saturate(N.y*.5+.5))*orm.r;float3 light[3]={normalize(float3(-.6,1,-.4)),normalize(float3(.6,.35,.7)),normalize(float3(.25,-.4,-.8))};float3 colors[3]={float3(2.6,2.5,2.35),float3(.65,.82,1.1),float3(.22,.25,.3)};
  [unroll]for(int k=0;k<3;k++){float3 L=light[k],H=normalize(L+V);float NL=saturate(dot(N,L)),NV=max(.001,saturate(dot(N,V))),NH=saturate(dot(N,H)),VH=saturate(dot(V,H));float a=roughness*roughness,a2=a*a;float den=NH*NH*(a2-1)+1;float D=a2/max(.00001,3.14159265*den*den);float g=(roughness+1)*(roughness+1)/8;float G=NV/(NV*(1-g)+g)*NL/max(.001,NL*(1-g)+g);float3 F=F0+(1-F0)*pow(1-VH,5);float3 spec=D*G*F/max(.001,4*NV*NL);result+=((1-F)*(1-metal)*base.rgb/3.14159265+spec)*colors[k]*NL;}
  float3 reflection=lerp(float3(.15,.2,.28),float3(.48,.52,.57),saturate(reflect(-V,N).y*.5+.5));result+=reflection*F0*(1-roughness*.7)*orm.r;if((mesh.pad&1)!=0)result=lerp(result,float3(.08,.6,1.8),.65);return float4(pow(tone(result),1/2.2),mesh.decal?1:base.a);}
 struct GridOutput{float4 position:SV_Position;float2 uv:TEXCOORD0;};

@@ -557,11 +557,27 @@ Json Scene::summary() const {
         {"scene_build_seconds", buildSeconds},
         {"animation_formula", "M T(p+sum(pos)) Q1 Rn...R1 Q2^-1 Sbase Q2 Qsn^-1 Sn Qsn ... Qs1^-1 S1 Qs1"}};
 }
+MaterialAlphaMode materialAlphaMode(const Material& m) {
+    // DCS blend modes: NONE, TRANSPARENT, ALPHA_TEST, ADDITIVE, DECAL,
+    // DECAL_DEFERRED, SHADOWED_TRANSPARENT. Scalar opacity never changes NONE.
+    if (m.blending == 0)
+        return MaterialAlphaMode::Opaque;
+    if (m.blending == 2)
+        return MaterialAlphaMode::Mask;
+    if (m.blending >= 1 && m.blending <= 6)
+        return MaterialAlphaMode::Blend;
+    // Preserve the previous fallback for unrecognized material modes.
+    const auto opacity = m.uniforms.find("opacityValue");
+    return opacity != m.uniforms.end() && opacity->is_number() && opacity->get<float>() < .999f
+               ? MaterialAlphaMode::Blend
+               : MaterialAlphaMode::Opaque;
+}
 F4 materialColor(const Material& m) {
     float opacity = m.uniforms.contains("opacityValue") && m.uniforms["opacityValue"].is_number()
                         ? m.uniforms["opacityValue"].get<float>()
                         : 1;
-    F4 c{.66f, .7f, .75f, std::clamp(opacity, 0.f, 1.f)};
+    F4 c{.66f, .7f, .75f,
+         materialAlphaMode(m) == MaterialAlphaMode::Opaque ? 1.f : std::clamp(opacity, 0.f, 1.f)};
     if (m.uniforms.contains("diffuseColor")) {
         auto& v = m.uniforms["diffuseColor"];
         if (v.is_array() && v.size() >= 3)

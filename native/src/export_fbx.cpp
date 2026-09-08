@@ -1,5 +1,7 @@
 #include "export_internal.h"
 #include <numbers>
+#include <tuple>
+#include <wincodec.h>
 
 namespace edm {
 namespace {
@@ -298,7 +300,8 @@ struct Encoder {
     std::vector<int> nodeParents;
     std::vector<Connection> connections;
     std::map<std::string, int32_t> objectCounts;
-    std::map<std::pair<int, int>, int64_t> textures;
+    std::map<std::tuple<int, int, bool>, int64_t> textures;
+    std::map<size_t, int64_t> opaqueVideos;
     std::set<size_t> boneNodes;
     size_t meshCount = 0, triangleCount = 0, curveCount = 0, skinCount = 0;
     size_t rotationKeyCount = 0;
@@ -369,18 +372,85 @@ struct Encoder {
         });
         w.leaf("References");
     }
-    std::string imageName(size_t i) const {
-        return "edm_image_" + std::to_string(i) + ".png";
+    std::string imageName(size_t i, bool opaque = false) const {
+        return "edm_image_" + std::to_string(i) + (opaque ? "_opaque_rgb.png" : ".png");
     }
-    int64_t texture(int textureIndex, int uvSet) {
-        auto key = std::make_pair(textureIndex, uvSet);
+    DirectX::Blob opaquePng(size_t imageIndex) {
+        w.check();
+        const auto& image = doc().at("images").at(imageIndex);
+        const auto bytes = source.view(image.at("bufferView"));
+        ComApartment apartment;
+        DirectX::TexMetadata metadata;
+        require(SUCCEEDED(DirectX::GetMetadataFromWICMemory(bytes.data(), bytes.size(),
+                                                            DirectX::WIC_FLAGS_NONE, metadata)) &&
+                    metadata.width > 0 && metadata.height > 0 && metadata.width <= 32768 &&
+                    metadata.height <= 32768,
+                "FBX: invalid opaque PNG dimensions");
+        DirectX::ScratchImage decoded, converted;
+        require(SUCCEEDED(DirectX::LoadFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_FORCE_RGB,
+                                                     nullptr, decoded)),
+                "FBX: cannot decode opaque PNG pixels");
+        w.check();
+        const auto* pixels = decoded.GetImage(0, 0, 0);
+        require(pixels != nullptr, "FBX: missing opaque PNG pixels");
+        if (pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+            pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+            const auto format = DirectX::IsSRGB(pixels->format) ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB
+                                                                : DXGI_FORMAT_R8G8B8A8_UNORM;
+            require(SUCCEEDED(DirectX::Convert(*pixels, format, DirectX::TEX_FILTER_DEFAULT, 0, converted)),
+                    "FBX: cannot convert opaque PNG pixels");
+            pixels = converted.GetImage(0, 0, 0);
+        }
+        // The payload is straight RGBA. Keep every RGB byte, including RGB beneath
+        // zero alpha. Making the temporary copy opaque prevents a codec from
+        // compositing those colors when dropping alpha; the original stays intact.
+        for (size_t y = 0; y < pixels->height; ++y) {
+            if (!(y % 64))
+                w.check();
+            for (size_t x = 0; x < pixels->width; ++x)
+                pixels->pixels[y * pixels->rowPitch + x * 4 + 3] = 255;
+        }
+        DirectX::Blob png;
+        require(SUCCEEDED(DirectX::SaveToWICMemory(*pixels, DirectX::WIC_FLAGS_NONE, GUID_ContainerFormatPng,
+                                                   png, &GUID_WICPixelFormat24bppBGR)),
+                "FBX: cannot encode RGB-only opaque PNG");
+        w.check();
+        return png;
+    }
+    int64_t opaqueVideo(size_t imageIndex) {
+        if (opaqueVideos.contains(imageIndex))
+            return opaqueVideos.at(imageIndex);
+        auto png = opaquePng(imageIndex);
+        const auto& image = doc().at("images").at(imageIndex);
+        const auto name = imageName(imageIndex, true), original = imageName(imageIndex);
+        const int64_t uid = id();
+        object("Video", uid, name, "Clip", [&] {
+            w.leaf("Type", {Property("Clip")});
+            w.node("Properties70", {}, [&] {
+                w.string("Path", name);
+                w.string("EDM_SourceImage", image.value("name", original));
+                w.string("EDM_OriginalImage", original);
+                w.string("EDM_AlphaPolicy", "OPAQUE RGB derivative; original PNG alpha preserved separately");
+            });
+            w.leaf("UseMipMap", {Property(int32_t(0))});
+            w.leaf("Filename", {Property(name)});
+            w.leaf("RelativeFilename", {Property(name)});
+            const auto* data = static_cast<const uint8_t*>(png.GetBufferPointer());
+            w.leaf("Content", {Property::blob({data, png.GetBufferSize()})});
+        });
+        opaqueVideos.emplace(imageIndex, uid);
+        return uid;
+    }
+    int64_t texture(int textureIndex, int uvSet, bool opaque = false) {
+        auto key = std::make_tuple(textureIndex, uvSet, opaque);
         if (textures.contains(key))
             return textures.at(key);
         const auto& image = doc().at("textures").at(textureIndex);
         size_t imageIndex = image.at("source");
         int64_t uid = id();
         textures[key] = uid;
-        auto name = imageName(imageIndex);
+        const int64_t video = opaque ? opaqueVideo(imageIndex) : videos.at(imageIndex);
+        auto name = imageName(imageIndex, opaque);
         object("Texture", uid, name + " / UV" + std::to_string(uvSet), "", [&] {
             w.leaf("Type", {Property("TextureVideoClip")});
             w.leaf("Version", {Property(int32_t(202))});
@@ -398,9 +468,11 @@ struct Encoder {
                 w.vector("Scaling", V3::Ones());
                 w.integer("CurrentTextureBlendMode", 0, "enum");
                 w.integer("UseMaterial", 1, "bool");
+                if (opaque)
+                    w.string("EDM_OriginalImage", imageName(imageIndex));
             });
         });
-        connect(videos.at(imageIndex), uid);
+        connect(video, uid);
         return uid;
     }
     void materialResources() {
@@ -427,7 +499,9 @@ struct Encoder {
             materials.push_back(uid);
             const auto& pbr = mat.at("pbrMetallicRoughness");
             auto color = pbr.value("baseColorFactor", Json{1., 1., 1., 1.});
-            double alpha = color.at(3), roughness = pbr.value("roughnessFactor", 1.);
+            const bool opaque = mat.value("alphaMode", "OPAQUE") == "OPAQUE";
+            double alpha = opaque ? 1. : color.at(3).get<double>(),
+                   roughness = pbr.value("roughnessFactor", 1.);
             object("Material", uid, mat.value("name", "Material"), "", [&] {
                 w.leaf("Version", {Property(int32_t(102))});
                 w.leaf("ShadingModel", {Property("phong")});
@@ -445,6 +519,13 @@ struct Encoder {
                     w.scalar("EDM_AlphaCutoff", mat.value("alphaCutoff", .5));
                     w.scalar("EDM_RoughnessFactor", roughness);
                     w.scalar("EDM_MetallicFactor", pbr.value("metallicFactor", 0.));
+                    if (opaque && pbr.contains("baseColorTexture")) {
+                        const auto& base = pbr.at("baseColorTexture");
+                        const size_t image =
+                            doc().at("textures").at(base.at("index").get<size_t>()).at("source");
+                        w.string("EDM_OriginalDiffuseImage", imageName(image));
+                        w.string("EDM_OpaqueDiffuseImage", imageName(image, true));
+                    }
                     if (pbr.contains("metallicRoughnessTexture")) {
                         auto& orm = pbr.at("metallicRoughnessTexture");
                         size_t image = doc().at("textures").at(orm.at("index").get<size_t>()).at("source");
@@ -455,9 +536,9 @@ struct Encoder {
             });
             if (pbr.contains("baseColorTexture")) {
                 auto& base = pbr.at("baseColorTexture");
-                int64_t tex = texture(base.at("index"), base.value("texCoord", 0));
+                int64_t tex = texture(base.at("index"), base.value("texCoord", 0), opaque);
                 connect(tex, uid, "DiffuseColor");
-                if (mat.value("alphaMode", "OPAQUE") != "OPAQUE")
+                if (!opaque)
                     connect(tex, uid, "TransparentColor");
             }
             if (pbr.contains("metallicRoughnessTexture")) {
@@ -971,6 +1052,11 @@ Json exportFbxScene(const Scene& scene, const fs::path& path, const ExportOption
          {"exported_skins", encoder.skinCount},
          {"animation_curves", encoder.curveCount},
          {"baked_rotation_keys", encoder.rotationKeyCount},
+         {"opaque_rgb_image_variants", encoder.opaqueVideos.size()},
+         {"opaque_alpha_compatibility",
+          "OPAQUE diffuse materials use full-resolution RGB PNG variants without an alpha channel. "
+          "Original PNG bytes remain embedded and are identified by EDM_OriginalImage / "
+          "EDM_OriginalDiffuseImage metadata; transparent and masked materials retain their original PNG."},
          {"rotation_baking", "60 Hz minimum for moving rotations, adaptive quaternion error 0.000002 rad"},
          {"fbx_time_resolution_seconds", 1. / fbxSecond},
          {"step_compatibility",

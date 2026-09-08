@@ -163,6 +163,8 @@ struct Scene {
             warnings.push_back(std::move(message));
     }
 };
+enum class MaterialAlphaMode : uint32_t { Opaque, Mask, Blend };
+MaterialAlphaMode materialAlphaMode(const Material& mat);
 F4 materialColor(const Material& mat);
 std::vector<F2> textureUV(const Mesh& mesh, const Material& mat, int slot, const Args& args = {});
 std::vector<int> bortMapping(const Scene& scene);

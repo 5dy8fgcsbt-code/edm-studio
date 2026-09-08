@@ -149,7 +149,7 @@ std::shared_ptr<GpuModel> GpuModel::prepare(ID3D11Device* device, std::shared_pt
         data.skinned = mesh.skinned();
         data.number = UINT(out->numbers.size());
         data.color = materialColor(mat);
-        data.blending = mat.blending;
+        data.alphaMode = uint32_t(materialAlphaMode(mat));
         data.decal = !mesh.selectors.empty();
         data.pad = !mesh.uvs.empty() && mesh.numbers.empty() ? 2u : 0u;
         data.twoSided = mat.culling == 1;
@@ -162,7 +162,7 @@ std::shared_ptr<GpuModel> GpuModel::prepare(ID3D11Device* device, std::shared_pt
         draw.base = UINT(vertices.size());
         draw.index = UINT(mi);
         draw.maximumWeightMagnitude = mesh.skinned() ? 0 : 1;
-        draw.transparent = !data.decal && ((mat.blending >= 1 && mat.blending <= 4) || data.color[3] < .999f);
+        draw.transparent = !data.decal && materialAlphaMode(mat) == MaterialAlphaMode::Blend;
         auto uv = textureUV(mesh, mat, 0), rm = textureUV(mesh, mat, 13), decal = textureUV(mesh, mat, 3);
         V3 lo = V3::Constant(1e100), hi = V3::Constant(-1e100);
         for (size_t i = 0; i < mesh.positions.size(); i++) {

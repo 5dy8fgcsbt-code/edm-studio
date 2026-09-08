@@ -50,6 +50,7 @@ Scene fixture(const fs::path& root) {
     scene.nodes[0].name = "Plane root";
     scene.materials.resize(1);
     scene.materials[0].name = "机翼 材质\nnewmtl forged";
+    scene.materials[0].blending = 1;
     scene.materials[0].uniforms = {{"diffuseColor", {.25, .5, .75}}, {"opacityValue", .6}};
     Mesh mesh;
     mesh.name = "左机翼\nf 999 999 999";

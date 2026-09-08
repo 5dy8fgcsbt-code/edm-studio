@@ -1,4 +1,4 @@
-# EDM Studio Native 0.8.0
+# EDM Studio Native 0.8.1
 
 Windows 原生 C++20 / Dear ImGui / Direct3D 11 桌面程序。直接打开 DCS EDM v8/v10，预览参数动画、涂装、RoughMet 和动态编号，导出 GLB / glTF 2.0 / OBJ / FBX。运行时不需要 Python、Qt、DCS、Blender 或网络。
 
@@ -17,6 +17,8 @@ Windows 原生 C++20 / Dear ImGui / Direct3D 11 桌面程序。直接打开 DCS 
 
 ## 动画与材质
 
+0.8.1 修复 F-15E 等模型的机身被错误隐藏：按 EDM 混合模式区分不透明、裁切和透明材质。不透明材质不再误用透明度字段；原始贴图 Alpha 和绘制工程仍完整保留。FBX 为不透明材质附加 RGB 贴图，兼容自动连接图片 Alpha 的导入器。
+
 GLB / glTF / FBX 将 EDM 参数范围转换为每参数独立的时间片段，默认 3 秒。保留负参数、层级、定向缩放、旋转、8 权重蒙皮和逆绑定矩阵；FBX 对四元数旋转自适应采样为连续欧拉曲线。每段动画将其他参数固定为导出时的当前值（含涂装 custom_args 和编号），静态模式保存当前组合姿态。OBJ 将变形固定在顶点上，仅保存静态模型。
 
 RoughMet 的 R/G/B 对应环境遮蔽/粗糙度/金属度。NumberNode 编号图集转换为标准 STEP 显隐节点。动态 Lua 使用内嵌 Lua 5.4.8 的独立子进程，支持函数、循环、条件及目录范围内的 dofile/require；内存、指令和 5 秒时间上限防止错误配置阻塞界面。
@@ -24,6 +26,8 @@ RoughMet 的 R/G/B 对应环境遮蔽/粗糙度/金属度。NumberNode 编号图
 DCS 专用灯光、法线/效果着色器、环境反射、损伤和其他材质参数动画不能完整映射到通用 PBR。内部 LOD 当前全部保留，碰撞壳不加入可见模型；优先使用明确的单个 LOD 文件。未知布局会明确报错。原始格式分析见 [读取与动画导出分析](docs/DCS_EDM_读取与动画导出分析.md)，旧版记录见 [0.3.4 参考](docs/LEGACY_0.3.4.md)。
 
 ## 构建与验证
+
+0.8.1 的 14 组回归、32,921 项检查通过，新增 226 项材质 Alpha 检查。真实 F-15E 的完整机身、默认涂装、动画 GPU 求值和贴花保存重开均已验证，细节见[验证记录](docs/NATIVE_VALIDATION.md)。
 
 安装 Visual Studio C++ 桌面开发工具和 Windows SDK，使用 PowerShell 7。依赖源码已放入 native/vendor，可离线构建。
 

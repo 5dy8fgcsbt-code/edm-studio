@@ -29,7 +29,7 @@ struct GpuPose {
 struct GpuMeshData {
     uint32_t transform, skinned, number, pad;
     F4 color;
-    uint32_t blending, decal, twoSided, material;
+    uint32_t alphaMode, decal, twoSided, material;
 };
 struct GpuDraw {
     uint32_t count, first, base, index;
