@@ -25,6 +25,27 @@ struct PaintRect {
         return x1 <= x0 || y1 <= y0;
     }
 };
+struct PaintLayerInfo {
+    uint64_t id = 0;
+    std::string name;
+    bool visible = true;
+    float opacity = 1;
+    bool preserveAlpha = true;
+    bool operator==(const PaintLayerInfo&) const = default;
+};
+struct PaintLayerTile {
+    uint32_t x = 0, y = 0; // Pixel origin, aligned to 64; edge tiles are clipped to the base image.
+    PaintImage image;
+};
+struct PaintLayerSnapshot {
+    PaintLayerInfo info;
+    std::vector<PaintLayerTile> tiles;
+};
+struct PaintCanvasLayers {
+    PaintImage base;
+    std::vector<PaintLayerSnapshot> layers; // Bottom to top.
+    uint64_t activeLayer = 0;
+};
 
 // Sparse tile history: a drag is one undo step, irrespective of its number of stamps.
 // The most recent operation remains undoable even if it alone exceeds the soft history budget.
@@ -62,8 +83,28 @@ class PaintCanvas {
     bool canRedo() const;
     bool undo();
     bool redo();
+    void enableLayers(const std::vector<PaintLayerInfo>& layers, uint64_t active);
+    bool layered() const;
+    std::vector<PaintLayerInfo> layers() const;
+    uint64_t activeLayer() const;
+    void selectLayer(uint64_t id);
+    // Layer structure/content changes join the current stroke's undo transaction.
+    void setLayers(const std::vector<PaintLayerInfo>& layers, uint64_t active);
+    void duplicateLayer(uint64_t source, uint64_t destination); // Both IDs must already exist.
+    void clearLayer(uint64_t id);
+    void replaceLayerImage(uint64_t id, const PaintImage& image);
+    // Synchronize global metadata without discarding the canvas's existing undo/redo tokens.
+    void syncLayers(const std::vector<PaintLayerInfo>& layers, uint64_t active);
+    // Expanded archive pixel budget: immutable base + composite + every logical layer tile.
+    // Unlike storageBytes(), this counts shared duplicate tiles once per layer and excludes history.
+    size_t layerSnapshotBytes() const;
+    PaintCanvasLayers layerSnapshot() const;
+    void restoreLayers(PaintCanvasLayers layers);
+    size_t storageBytes() const;
     // color is straight sRGB RGBA, all components in [0,1]. Alpha masks are preserved by default.
     // Requires an active stroke. Returns true only when the stored pixel changes.
+    // In layered mode this always accumulates source-over RGBA in the active visible layer;
+    // preserveAlpha is ignored, and PaintLayerInfo::preserveAlpha controls final compositing.
     bool blendPixel(int x, int y, const F4& color, float coverage = 1, bool preserveAlpha = true);
 };
 

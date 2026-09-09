@@ -198,6 +198,7 @@ class App {
     fs::path wrapImage, wrapResult;
     fs::path projectionImage, projectionResult;
     fs::path paintProjectDirectory;
+    fs::path layersTestDirectory;
     fs::path autoPaintDirectory, autoPaintImage;
     int autoPaintDimension = 512;
     fs::path decalTestDirectory, decalTestImage;
@@ -425,7 +426,8 @@ class App {
                          std::to_string(scene.meshes.size()) + " 个网格";
                 record(scene.summary().dump(2));
                 applyInitialArguments();
-                if (!paintMaterial.empty() || !autoPaintDirectory.empty() || !decalTestDirectory.empty())
+                if (!paintMaterial.empty() || !autoPaintDirectory.empty() || !decalTestDirectory.empty() ||
+                    !layersTestDirectory.empty())
                     rightTab = 3;
                 else if (scene.collisionOnly())
                     rightTab = 2;
@@ -1776,6 +1778,8 @@ class App {
         if (!autoPaintDirectory.empty() &&
             !paint.exerciseAutomatic(renderer, autoPaintImage, autoPaintDirectory, autoPaintDimension))
             return false;
+        if (!layersTestDirectory.empty() && !paint.exerciseLayers(renderer, args, layersTestDirectory))
+            return false;
         if (!paintMaterial.empty() && !paint.exercise(renderer, paintMaterial, paintResult))
             return false;
         if (attachmentTest && !exerciseAttachmentInteraction())
@@ -2004,7 +2008,11 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
             app.projectionResult = value();
         else if (key == L"--paint-project-dir")
             app.paintProjectDirectory = value();
-        else if (key == L"--auto-paint-test") {
+        else if (key == L"--layers-test") {
+            app.layersTestDirectory = value();
+            app.smoke = true;
+            app.rightTab = 3;
+        } else if (key == L"--auto-paint-test") {
             app.autoPaintDirectory = value();
             app.smoke = true;
         } else if (key == L"--auto-paint-image")
@@ -2040,6 +2048,18 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
             throw std::runtime_error("Unknown option: " + utf8(key));
         else
             initial = key;
+    }
+    if (!app.layersTestDirectory.empty()) {
+        require(!initial.empty(), "Layer diagnostic requires an EDM model path");
+        require(app.autoPaintDirectory.empty() && app.paintMaterial.empty() && app.wrapImage.empty() &&
+                    app.projectionImage.empty() && app.decalTestDirectory.empty() && !app.strokeTest,
+                "Run the layer diagnostic independently of other painting diagnostics");
+        app.layersTestDirectory = fs::absolute(app.layersTestDirectory).lexically_normal();
+        fs::create_directories(app.layersTestDirectory);
+        if (app.metricsPath.empty())
+            app.metricsPath = app.layersTestDirectory / "metrics.json";
+        if (app.capturePath.empty())
+            app.capturePath = app.layersTestDirectory / "preview.png";
     }
     if (!app.decalTestDirectory.empty()) {
         require(!initial.empty() && !app.decalTestImage.empty(),
@@ -2085,6 +2105,8 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
         app.settingsPath = app.autoPaintDirectory / "diagnostic-settings.json";
     if (!app.decalTestDirectory.empty())
         app.settingsPath = app.decalTestDirectory / "diagnostic-settings.json";
+    if (!app.layersTestDirectory.empty())
+        app.settingsPath = app.layersTestDirectory / "diagnostic-settings.json";
     WNDCLASSEXW wc{sizeof(wc),
                    CS_CLASSDC,
                    windowProc,
@@ -2210,6 +2232,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
             if (std::wstring_view(argv[i]) == L"--smoke")
                 smoke = true;
             if (std::wstring_view(argv[i]) == L"--auto-paint-test" ||
+                std::wstring_view(argv[i]) == L"--layers-test" ||
                 std::wstring_view(argv[i]) == L"--decal-test") {
                 smoke = true;
                 if (i + 1 < argc)
@@ -2221,8 +2244,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
         if (smoke) {
             if (metrics.empty() && !automaticDirectory.empty())
                 metrics = automaticDirectory / "metrics.json";
-            if (!metrics.empty())
-                edm::writeJson(metrics, {{"error", text}});
+            if (!metrics.empty()) {
+                // Invalid/unwritable diagnostic paths may be the original startup error. Reporting
+                // that error must not throw again across wWinMain and terminate the process.
+                try {
+                    edm::writeJson(metrics, {{"error", text}});
+                } catch (...) {
+                    OutputDebugStringW(L"EDM Studio: cannot write the diagnostic error report.\n");
+                }
+            }
         } else {
             auto message = edm::wide(text);
             MessageBoxW(nullptr, message.c_str(), L"EDM Studio — 启动失败", MB_OK | MB_ICONERROR);

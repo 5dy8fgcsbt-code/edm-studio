@@ -44,6 +44,37 @@ bool PaintEditor::exerciseAutomatic(Renderer& renderer, const fs::path& image, c
                 renderer.diffuseOverrides[id] = entry->second.gpu.view;
         return p.entries.size();
     };
+    auto imageProof = [](const PaintImage& pixels) {
+        uint64_t hash = 14695981039346656037ull;
+        for (uint8_t value : pixels.rgba) {
+            hash ^= value;
+            hash *= 1099511628211ull;
+        }
+        return Json{{"width", pixels.width}, {"height", pixels.height}, {"rgba_hash", hash}};
+    };
+    auto layerProof = [&](const PaintLayerSnapshotMap& canvases) {
+        Json proof = Json::object();
+        for (const auto& [id, canvas] : canvases) {
+            Json layers = Json::array();
+            for (const auto& layer : canvas->layers) {
+                std::map<std::pair<uint32_t, uint32_t>, Json> ordered;
+                for (const auto& tile : layer.tiles)
+                    ordered[{tile.x, tile.y}] = imageProof(tile.image);
+                Json tiles = Json::array();
+                for (const auto& [origin, pixels] : ordered)
+                    tiles.push_back({{"x", origin.first}, {"y", origin.second}, {"pixels", pixels}});
+                layers.push_back({{"id", layer.info.id},
+                                  {"name", layer.info.name},
+                                  {"visible", layer.info.visible},
+                                  {"opacity", layer.info.opacity},
+                                  {"preserve_alpha", layer.info.preserveAlpha},
+                                  {"tiles", tiles}});
+            }
+            proof[std::to_string(id)] = {
+                {"base", imageProof(canvas->base)}, {"active", canvas->activeLayer}, {"layers", layers}};
+        }
+        return proof;
+    };
     try {
         require(p.error.empty(), p.error);
         if (p.autoStage == 10)
@@ -320,7 +351,11 @@ bool PaintEditor::exerciseAutomatic(Renderer& renderer, const fs::path& image, c
             require(!hasEdits(), "Reopened project should be saved before the template diagnostic");
             publish("loading_template_for_zero_opacity_stroke");
             p.autoStage = 7;
-            p.queueTemplate(renderer, image);
+            // A uniform image with deliberately different dimensions gives a known expected
+            // result after resampling, independent of the resizing implementation.
+            const auto templatePath = directory / "layer-template.png";
+            PaintImage(37, 23, {25, 180, 227, 255}).savePNG(templatePath);
+            p.queueTemplate(renderer, templatePath);
             return false;
         }
         if (p.autoStage == 7) {
@@ -337,11 +372,34 @@ bool PaintEditor::exerciseAutomatic(Renderer& renderer, const fs::path& image, c
             auto hit = Impl::strokeHit(context, point);
             require(hit.has_value(), "Original visible surface is no longer available for the template test");
             int target = p.canvasIndex(hit->material);
-            require(p.entries.contains(target), "Template diagnostic must replace an existing canvas");
-            p.autoBefore.clear();
-            p.autoBefore[target] = p.pendingTemplate;
-            p.autoResult["template"] = {
-                {"target_canvas", target}, {"source_image", pathString(image)}, {"brush_opacity", 0}};
+            require(p.entries.contains(target), "Template diagnostic must use an existing canvas");
+            auto layout = p.layerInfos;
+            const auto templateLayer = p.nextLayerId;
+            layout.push_back({templateLayer, "模板诊断图层", true, 1, false});
+            p.changeLayers(layout, templateLayer);
+            p.autoBefore = p.snapshot();
+            const auto beforeLayers = layerProof(p.layerSnapshot());
+            p.autoResult["template"] = {{"target_canvas", target},
+                                        {"source_image", pathString(directory / "layer-template.png")},
+                                        {"layer", templateLayer},
+                                        {"brush_opacity", 0},
+                                        {"before_layers", beforeLayers}};
+            // Exercise cancellation after the template has actually changed the active layer,
+            // before the queued stroke commits. The pending template must remain reusable.
+            const bool wasSaved = p.saved;
+            auto originalCanvas = p.entries.at(target).canvas;
+            p.beginQueuedStroke(context, point, 1.);
+            require(p.installLayerTemplate(true), "Template cancellation did not install its layer image");
+            require(p.entries.at(target).canvas == originalCanvas &&
+                        originalCanvas->image().rgba != p.autoBefore.at(target)->rgba,
+                    "Layer template did not modify the retained canvas before cancellation");
+            p.cancelQueuedStroke();
+            require(p.pendingTemplate && !p.history.active() && p.history.canUndo() && p.saved == wasSaved,
+                    "Cancelling layer template lost the pending image, prior history or saved state");
+            compareImages(p.autoBefore);
+            require(layerProof(p.layerSnapshot()) == beforeLayers,
+                    "Cancelling template changed the base, earlier paint layers or metadata");
+            p.autoResult["template"]["cancel_restores_base_layers_history_and_pending"] = true;
             p.beginQueuedStroke(context, point, 1.);
             p.strokePath.release();
             publish("installing_template_without_brush_pixels");
@@ -360,14 +418,46 @@ bool PaintEditor::exerciseAutomatic(Renderer& renderer, const fs::path& image, c
                     "Zero-opacity template stroke must report a template change and zero painted pixels");
             require(hasEdits() && !p.pendingTemplate,
                     "Installing a template without brush pixels did not mark the document unsaved");
-            compareImages(p.autoBefore);
+            const int target = p.autoResult.at("template").at("target_canvas").get<int>();
+            const auto templateLayer = p.autoResult.at("template").at("layer").get<uint64_t>();
+            const auto afterLayers = layerProof(p.layerSnapshot());
+            const auto& beforeLayers = p.autoResult.at("template").at("before_layers");
+            for (const auto& [key, before] : beforeLayers.items()) {
+                const auto& after = afterLayers.at(key);
+                require(after.at("base") == before.at("base") && after.at("active") == before.at("active") &&
+                            after.at("layers").size() == before.at("layers").size(),
+                        "Template replaced the original base or changed global layer settings");
+                for (size_t index = 0; index < before.at("layers").size(); ++index) {
+                    const auto& oldLayer = before.at("layers").at(index);
+                    if (p.canvasIndex(std::stoi(key)) != target || oldLayer.at("id") != templateLayer)
+                        require(after.at("layers").at(index) == oldLayer,
+                                "Template changed another material or an underlying layer");
+                }
+            }
             auto templateSnapshot = snapshot();
             for (const auto& [id, expected] : p.autoBefore) {
                 require(templateSnapshot.contains(id) && templateSnapshot.at(id)->width == expected->width &&
-                            templateSnapshot.at(id)->height == expected->height &&
-                            templateSnapshot.at(id)->rgba == expected->rgba,
-                        "Template-only edits were omitted from the public paint snapshot");
+                            templateSnapshot.at(id)->height == expected->height,
+                        "Layer template changed the existing texture resolution");
+                if (p.canvasIndex(id) == target) {
+                    const PaintImage solid(expected->width, expected->height, {25, 180, 227, 255});
+                    require(templateSnapshot.at(id)->rgba == solid.rgba,
+                            "Resampled opaque template did not cover its active layer");
+                } else
+                    require(templateSnapshot.at(id)->rgba == expected->rgba,
+                            "Template changed an unrelated material composite");
             }
+            require(p.undoLayerEdit(), "Layer template did not create an undoable edit");
+            compareImages(p.autoBefore);
+            require(layerProof(p.layerSnapshot()) == beforeLayers,
+                    "Undoing template did not restore the base and all prior editable layers");
+            require(p.undoLayerEdit(true), "Cannot redo layer template installation");
+            compareImages(templateSnapshot);
+            require(layerProof(p.layerSnapshot()) == afterLayers,
+                    "Redoing template lost editable layer content");
+            p.autoResult["template"]["undo_redo_preserves_base_and_lower_layers"] = true;
+            p.autoResult["template"]["existing_resolution_preserved"] = true;
+            p.autoBefore = templateSnapshot;
             auto recoveryRoot = directory / "template-recovery";
             require(!fs::exists(recoveryRoot), "Template recovery diagnostic requires a fresh directory");
             recover(recoveryRoot);
@@ -388,10 +478,13 @@ bool PaintEditor::exerciseAutomatic(Renderer& renderer, const fs::path& image, c
                         "Recovery changed or lost the template-only texture pixels");
             }
             require(recovered.restoreAppearance, "Template recovery did not preserve the base appearance");
+            require(layerProof(recovered.layerCanvases) == afterLayers,
+                    "Template recovery lost the base or editable layer stack");
             p.autoResult["template"]["stroke"] = p.strokeResult;
             p.autoResult["template"]["unsaved_without_painted_pixels"] = true;
             p.autoResult["template"]["snapshot_pixels_match"] = true;
             p.autoResult["template"]["recovery_pixels_match"] = true;
+            p.autoResult["template"]["recovery_layers_match"] = true;
             p.autoResult["template"]["recovery_manifest"] = pathString(recoveryManifest);
             p.autoResult["template"]["gpu_canvases_checked"] = verifyGpu();
             p.autoResult["template"]["gpu_pixels_match"] = true;

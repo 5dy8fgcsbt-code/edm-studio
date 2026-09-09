@@ -63,10 +63,10 @@ std::shared_ptr<Scene> restorePaintAssembly(std::shared_ptr<Scene> baseScene, co
     cancelled(cancel);
     const auto project = fs::is_directory(projectPath) ? projectPath / "project.edmpaint.json" : projectPath;
     const auto directory = fs::absolute(project).parent_path();
-    const auto manifest = Json::parse(readFile(project, 2000000));
+    const auto manifest = Json::parse(readFile(project, paintProjectManifestBytes));
     require(manifest.is_object() && manifest.value("format", "") == "EDM Studio Paint" &&
-                manifest.value("version", 0) == 2,
-            "不是受支持的 EDM 绘制工程（需要版本 2）");
+                (manifest.value("version", 0) == 2 || manifest.value("version", 0) == 3),
+            "不是受支持的 EDM 绘制工程（需要版本 2 或 3）");
     Json expected = manifest.value(
         "assembly", Json{{"version", 1}, {"attachments", Json::array()}, {"default_args", Json::object()}});
     require(expected.is_object() && expected.value("version", 0) == 1 &&

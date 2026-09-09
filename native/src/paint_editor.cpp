@@ -192,6 +192,12 @@ struct PaintEditor::Impl {
     int material = -1, tool = 0;
     int paintMaxDimension = 2048;
     PaintBatchHistory history;
+    std::vector<PaintLayerInfo> layerInfos{{1, "图层 1", true, 1, true}};
+    uint64_t activeLayerId = 1, nextLayerId = 2;
+    std::shared_ptr<PaintCanvas> layerControl;
+    std::string layerNameDraft = "图层 1";
+    float layerOpacityDraft = 1;
+    Json layersDiagnosticResult;
     std::atomic_int activeMappingTasks{0};
     std::vector<int> canonicalIds;
     std::shared_ptr<const PaintImage> pendingTemplate;
@@ -271,9 +277,15 @@ struct PaintEditor::Impl {
     std::vector<uint8_t> strokeBefore;
     std::vector<PaintStrokePoint> strokeTrace;
     PaintSnapshot projectExpected;
+    PaintLayerSnapshotMap projectExpectedLayers;
     fs::path lastSavedProject;
     std::optional<PaintProjectDocument> pendingAppearance;
     bool lastOpenRestoredAppearance = false;
+
+    Impl() : layerControl(std::make_shared<PaintCanvas>(PaintImage(1, 1))) {
+        layerControl->enableLayers(layerInfos, activeLayerId);
+    }
+#include "paint_editor_layers.inc"
 
     bool strokePending() const {
         return strokePath.started();
@@ -337,7 +349,10 @@ struct PaintEditor::Impl {
     }
     void beginQueuedStroke(StrokeContext context, PaintStrokePoint point, double spacing) {
         require(!controlsBusy(), "请等待当前画笔完成");
+        requireWritableLayer();
         ensureAliases();
+        if (pendingTemplate)
+            pendingTemplateTarget = -1;
         if (auto hit = strokeHit(context, point)) {
             material = hit->material;
             if (pendingTemplate)
@@ -394,8 +409,12 @@ struct PaintEditor::Impl {
                 const auto& context = strokeContexts.at(next->context);
                 auto hit = strokeHit(context, next->point);
                 if (hit) {
+                    if (pendingTemplate && pendingTemplateTarget < 0)
+                        pendingTemplateTarget = canvasIndex(hit->material);
                     auto ids = brushMaterials(context, *hit);
                     if (!requestCanvases(ids, budget == 0))
+                        break;
+                    if (!installLayerTemplate(budget == 0))
                         break;
                     std::map<int, std::vector<int>> groups;
                     for (int id : ids)
@@ -426,7 +445,12 @@ struct PaintEditor::Impl {
                     strokeContexts.erase(strokeContexts.begin());
             if (strokePath.drained()) {
                 auto endpoint = strokePath.lastConsumed()->point;
+                prepareLayerCommit();
                 bool changed = history.commit();
+                if (strokeTemplateInstalled) {
+                    pendingTemplate.reset();
+                    pendingTemplateTarget = -1;
+                }
                 // Commit is authoritative. Diagnostic/UI allocation failure must never roll it back.
                 strokePath.cancel();
                 strokeContexts.clear();
@@ -607,15 +631,16 @@ struct PaintEditor::Impl {
             }
             require(!*cancel, "Cancelled");
             auto canvas = std::make_shared<PaintCanvas>(std::move(image));
+            initializeLayers(*canvas);
             return [this, selected, gen, canvas, imageName] {
                 if (gen != generation)
                     return;
-                size_t total = canvas->image().rgba.size();
+                size_t total = canvas->storageBytes();
                 for (auto& [index, entry] : entries)
                     if (index != selected)
-                        total += entry.canvas->image().rgba.size();
-                require(total <= 1024ull * 1024 * 1024,
-                        "编辑贴图超过 1 GiB 预算，请先保存工程再开始新材质。");
+                        total += entry.canvas->storageBytes();
+                require(total <= 2ull * 1024 * 1024 * 1024,
+                        "编辑贴图超过 2 GiB 预算，请先保存工程再开始新材质。");
                 entries[selected] = Entry{canvas, {}, imageName, {}};
                 history.clear();
                 canvasOptionsOpen = false;
@@ -718,14 +743,15 @@ struct PaintEditor::Impl {
     void saveProject(const fs::path& directory) {
         require(!controlsBusy(), "请先完成绘制任务");
         auto images = snapshot();
+        auto layers = layerSnapshot();
         auto source = scene;
         auto base = livery;
         auto extra = textureDirectory;
         auto name = liveryName;
         auto gen = generation;
-        start([this, directory, images, source, base, extra, name, gen](Progress p,
-                                                                        const std::atomic_bool* cancel) {
-            auto result = savePaintProject(*source, images, directory, name, base, extra, p, cancel);
+        start([this, directory, images, layers, source, base, extra, name,
+               gen](Progress p, const std::atomic_bool* cancel) {
+            auto result = savePaintProject(*source, images, directory, name, base, extra, p, cancel, layers);
             return [this, gen, result] {
                 if (gen != generation)
                     return;
@@ -747,16 +773,66 @@ struct PaintEditor::Impl {
             auto manifest = fs::is_directory(path) ? path / "project.edmpaint.json" : path;
             auto document =
                 std::make_shared<PaintProjectDocument>(loadPaintDocument(*restoredScene, manifest, cancel));
+            auto preparedLayers = document->layers.empty()
+                                      ? std::vector<PaintLayerInfo>{{1, "新绘制图层", true, 1, true}}
+                                      : document->layers;
+            auto preparedActive = document->layers.empty() ? uint64_t(1) : document->activeLayer;
+            auto preparedControl = std::make_shared<PaintCanvas>(PaintImage(1, 1));
+            preparedControl->enableLayers(preparedLayers, preparedActive);
+            if (document->layers.empty())
+                document->warnings.push_back("旧工程的平面绘制作为底图保留，新改动写入新图层。");
             auto prepared = restoredScene == source
                                 ? std::shared_ptr<GpuModel>{}
                                 : GpuModel::prepare(device.Get(), restoredScene, cancel, p);
             auto loaded = std::make_shared<std::map<int, Entry>>();
+            std::map<std::pair<const PaintCanvasLayers*, std::string>, std::shared_ptr<PaintCanvas>>
+                sharedLayers;
+            size_t loadedLayerBytes = 0;
             for (auto& [i, image] : document->images) {
                 require(!*cancel, "Cancelled");
-                (*loaded)[i] = Entry{std::make_shared<PaintCanvas>(*image), {}, "绘制工程", {}};
+                std::shared_ptr<PaintCanvas> canvas;
+                if (auto found = document->layerCanvases.find(i); found != document->layerCanvases.end()) {
+                    // An archive can reuse pixels for two attached instances. They still need
+                    // independent editing unless the normal automatic material-alias key agrees.
+                    const auto& material = restoredScene->materials.at(i);
+                    std::string diffuse = material.texture(0) ? lower(material.texture(0)->name) : "";
+                    if (document->livery) {
+                        auto binding = document->livery->textures.find({lower(material.name), 0});
+                        if (binding != document->livery->textures.end())
+                            diffuse =
+                                lower(binding->second.name) + (binding->second.common ? "|common" : "|local");
+                    }
+                    auto alias = std::to_string(material.extras.value("edm_attachment", -1)) + "\n" +
+                                 lower(pathString(material.source)) + "\n" + lower(material.name) + "\n" +
+                                 diffuse;
+                    if (material.name.empty())
+                        alias += "\n" + std::to_string(i);
+                    auto& cached = sharedLayers[{found->second.get(), alias}];
+                    if (!cached) {
+                        size_t bytes = found->second->base.rgba.size() * 2;
+                        for (const auto& layer : found->second->layers)
+                            for (const auto& tile : layer.tiles)
+                                bytes += tile.image.rgba.size();
+                        require(bytes <= 2ull * 1024 * 1024 * 1024 - loadedLayerBytes,
+                                "独立物体的图层展开后超过 2 GiB 编辑预算");
+                        loadedLayerBytes += bytes;
+                        cached = std::make_shared<PaintCanvas>(PaintImage(1, 1));
+                        cached->restoreLayers(*found->second);
+                    }
+                    canvas = cached;
+                } else {
+                    const auto bytes = image->rgba.size() * 2;
+                    require(bytes <= 2ull * 1024 * 1024 * 1024 - loadedLayerBytes,
+                            "旧工程转换为图层后超过 2 GiB 编辑预算");
+                    loadedLayerBytes += bytes;
+                    canvas = std::make_shared<PaintCanvas>(*image);
+                    canvas->enableLayers({{1, "新绘制图层", true, 1, true}}, 1);
+                }
+                (*loaded)[i] = Entry{std::move(canvas), {}, "绘制工程", {}};
             }
             document->images.clear();
-            return [this, &renderer, loaded, document, restoredScene, prepared, gen] {
+            return [this, &renderer, loaded, document, restoredScene, prepared, gen, preparedControl,
+                    preparedLayers = std::move(preparedLayers), preparedActive]() mutable {
                 if (gen != generation)
                     return;
                 if (prepared) {
@@ -770,6 +846,13 @@ struct PaintEditor::Impl {
                 }
                 entries = std::move(*loaded);
                 history.clear();
+                layerInfos = std::move(preparedLayers);
+                activeLayerId = preparedActive;
+                layerControl = std::move(preparedControl);
+                nextLayerId = 1;
+                for (const auto& layer : layerInfos)
+                    nextLayerId = std::max(nextLayerId, layer.id + 1);
+                refreshLayerSelection();
                 pendingTemplate.reset();
                 canonicalIds.clear();
                 lastOpenRestoredAppearance = document->restoreAppearance;
@@ -786,7 +869,14 @@ struct PaintEditor::Impl {
                     if (canonical != it->first && first != entries.end()) {
                         const auto& a = it->second.canvas->image();
                         const auto& b = first->second.canvas->image();
-                        if (a.width == b.width && a.height == b.height && a.rgba == b.rgba) {
+                        // Layered files may composite identically while holding different hidden art.
+                        // Keep them independent unless the loader proved their complete snapshot shared.
+                        const bool sameLayers =
+                            document->layerCanvases.empty() ||
+                            (document->layerCanvases.contains(it->first) &&
+                             document->layerCanvases.contains(canonical) &&
+                             document->layerCanvases.at(it->first) == document->layerCanvases.at(canonical));
+                        if (sameLayers && a.width == b.width && a.height == b.height && a.rgba == b.rgba) {
                             it = entries.erase(it);
                             continue;
                         }
@@ -795,9 +885,10 @@ struct PaintEditor::Impl {
                         canonicalIds[it->first] = it->first;
                     ++it;
                 }
+                document->layerCanvases.clear();
                 pendingAppearance = std::move(*document);
                 saved = true;
-                status = "工程已打开 · 基础涂装与绘制内容已恢复";
+                status = "工程已打开 · 底图与涂装图层已恢复";
                 for (const auto& warning : pendingAppearance->warnings)
                     status += "\n" + warning;
             };
@@ -974,6 +1065,10 @@ PaintSnapshot PaintEditor::snapshot() const {
     require(!busy(), "绘制任务尚未完成，请稍后导出");
     return impl->snapshot();
 }
+PaintLayerSnapshotMap PaintEditor::layerSnapshot() const {
+    require(!busy(), "绘制任务尚未完成，请稍后保存图层");
+    return impl->layerSnapshot();
+}
 std::optional<PaintProjectDocument> PaintEditor::takeRestoredAppearance() {
     auto result = std::move(impl->pendingAppearance);
     impl->pendingAppearance.reset();
@@ -984,13 +1079,17 @@ void PaintEditor::recover(const fs::path& directory) const {
         return;
     require(!busy(), "绘制任务尚未结束");
     auto& p = *impl;
-    savePaintRecovery(*p.scene, p.snapshot(), directory, {}, nullptr, p.livery, p.textureDirectory);
+    savePaintRecovery(*p.scene, p.snapshot(), directory, {}, nullptr, p.livery, p.textureDirectory,
+                      p.layerSnapshot());
 }
 Json PaintEditor::diagnostic() const {
     return {{"editing", active()},
             {"busy", busy()},
             {"material", impl->material},
             {"canvases", impl->entries.size()},
+            {"layers", impl->layerInfos.size()},
+            {"active_layer", impl->activeLayerId},
+            {"layers_validation", impl->layersDiagnosticResult},
             {"stroke_pixels", impl->strokePixels},
             {"surface_triangles", impl->surface ? impl->surface->triangleCount() : 0},
             {"surface_attachments_visible", impl->attachmentsVisible},
@@ -1254,13 +1353,16 @@ bool PaintEditor::exerciseStroke(Renderer& renderer) {
 bool PaintEditor::exerciseProject(Renderer& renderer, const fs::path& directory) {
     auto& p = *impl;
     require(p.error.empty(), p.error);
-    require(p.diagnosticStage == 2, "Complete the brush diagnostic before saving a paint project");
+    require(p.diagnosticStage == 2 ||
+                (p.layersDiagnosticResult.is_object() && p.layersDiagnosticResult.value("passed", false)),
+            "Complete the brush or layer diagnostic before saving a paint project");
     if (p.projectDiagnosticStage == 3)
         return true;
     if (p.controlsBusy())
         return false;
     if (p.projectDiagnosticStage == 0) {
         p.projectExpected = p.snapshot();
+        p.projectExpectedLayers = p.layerSnapshot();
         p.saveProject(directory);
         p.projectDiagnosticStage = 1;
         return false;
@@ -1287,6 +1389,7 @@ bool PaintEditor::exerciseProject(Renderer& renderer, const fs::path& directory)
     }
     require(p.lastOpenRestoredAppearance, "Project reopen did not produce a full appearance event");
     size_t checked = 0;
+    const auto restoredLayers = p.layerSnapshot();
     for (auto& [material, expected] : p.projectExpected) {
         require(p.entries.contains(p.canvasIndex(material)), "Project reopen lost an edited material");
         auto& entry = p.entries.at(p.canvasIndex(material));
@@ -1294,6 +1397,24 @@ bool PaintEditor::exerciseProject(Renderer& renderer, const fs::path& directory)
                     entry.canvas->image().height == expected->height &&
                     entry.canvas->image().rgba == expected->rgba,
                 "Project reopen changed paint pixels");
+        const auto& before = *p.projectExpectedLayers.at(material);
+        const auto& after = *restoredLayers.at(material);
+        require(before.base.width == after.base.width && before.base.height == after.base.height &&
+                    before.base.rgba == after.base.rgba && before.activeLayer == after.activeLayer &&
+                    before.layers.size() == after.layers.size(),
+                "Project reopen changed the original base or active layer");
+        for (size_t i = 0; i < before.layers.size(); ++i) {
+            const auto& a = before.layers[i];
+            const auto& b = after.layers[i];
+            require(a.info == b.info && a.tiles.size() == b.tiles.size(),
+                    "Project reopen changed layer metadata or tile coverage");
+            for (size_t j = 0; j < a.tiles.size(); ++j)
+                require(a.tiles[j].x == b.tiles[j].x && a.tiles[j].y == b.tiles[j].y &&
+                            a.tiles[j].image.width == b.tiles[j].image.width &&
+                            a.tiles[j].image.height == b.tiles[j].image.height &&
+                            a.tiles[j].image.rgba == b.tiles[j].image.rgba,
+                        "Project reopen changed editable layer pixels");
+        }
         syncCanvas(renderer, *entry.canvas, entry.gpu, true);
         renderer.diffuseOverrides[material] = entry.gpu.view;
         require(gpuMatchesCanvas(renderer, *entry.canvas, entry.gpu),
@@ -1307,18 +1428,21 @@ bool PaintEditor::exerciseProject(Renderer& renderer, const fs::path& directory)
                                  {"restored_attachments", p.scene->attachments.size()},
                                  {"materials_checked", checked},
                                  {"pixels_match", true},
+                                 {"complete_layers_match", true},
                                  {"gpu_pixels_match", true},
                                  {"appearance_event", true},
                                  {"warnings", Json::array()}};
     if (p.pendingAppearance)
         p.projectDiagnosticResult["warnings"] = p.pendingAppearance->warnings;
     p.projectExpected.clear();
+    p.projectExpectedLayers.clear();
     p.projectDiagnosticStage = 3;
     return true;
 }
 
 #include "paint_editor_panel.inc"
 #include "paint_editor_auto_test.inc"
+#include "paint_editor_layers_exercise.inc"
 #include "paint_editor_preview_test.inc"
 #include "paint_editor_decal_test.inc"
 bool PaintEditor::viewport(Renderer& renderer, ImVec2 origin, ImVec2 size, bool hovered) {

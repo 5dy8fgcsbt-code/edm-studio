@@ -4,6 +4,7 @@ void detachModel(int target) {
     const auto source = renderer.model->scene;
     require(target >= 0 && target < int(source->nodes.size()), "无效挂点");
     auto images = paint.snapshot();
+    auto layers = paint.layerSnapshot();
     auto selectedLivery = livery;
     auto extra = textureDir;
     auto recovery = settingsPath.parent_path() / "PaintRecovery";
@@ -19,8 +20,8 @@ void detachModel(int target) {
     };
     launch(
         "attachment",
-        [source, target, images, selectedLivery, extra, recovery, device](Progress progress,
-                                                                          const std::atomic_bool* cancel) {
+        [source, target, images, layers, selectedLivery, extra, recovery,
+         device](Progress progress, const std::atomic_bool* cancel) {
             progress("清理外挂层级与模型数据");
             Prepared prepared;
             prepared.result = detachScene(*source, target);
@@ -29,8 +30,8 @@ void detachModel(int target) {
             if (std::any_of(images.begin(), images.end(),
                             [&](const auto& image) { return map.at(image.first) < 0; })) {
                 progress("保存卸载物体的绘制恢复副本");
-                prepared.recovery =
-                    savePaintRecovery(*source, images, recovery, progress, cancel, selectedLivery, extra);
+                prepared.recovery = savePaintRecovery(*source, images, recovery, progress, cancel,
+                                                      selectedLivery, extra, layers);
             }
             prepared.model = GpuModel::prepare(device.Get(), prepared.result.scene, cancel, progress);
             return prepared;

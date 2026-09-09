@@ -2,6 +2,7 @@
 #include <iomanip>
 #include <sstream>
 #include <wincodec.h>
+#include <wincrypt.h>
 
 namespace edm {
 namespace {
@@ -93,6 +94,169 @@ std::string imageFingerprint(const PaintImage& image) {
 bool sameImage(const PaintImage& a, const PaintImage& b) {
     return a.width == b.width && a.height == b.height && a.rgba == b.rgba;
 }
+uint64_t unsignedInteger(const Json& value, uint64_t maximum, const char* message) {
+    require(value.is_number_unsigned() || (value.is_number_integer() && value.get<int64_t>() >= 0), message);
+    const auto number = value.get<uint64_t>();
+    require(number <= maximum, message);
+    return number;
+}
+Json layerInfo(const PaintLayerInfo& layer) {
+    return {{"id", layer.id},
+            {"name", layer.name},
+            {"visible", layer.visible},
+            {"opacity", layer.opacity},
+            {"preserve_alpha", layer.preserveAlpha}};
+}
+Json layerInfos(const PaintCanvasLayers& canvas) {
+    Json result = Json::array();
+    for (const auto& layer : canvas.layers)
+        result.push_back(layerInfo(layer.info));
+    return result;
+}
+size_t snapshotBytes(const PaintCanvasLayers& canvas) {
+    canvas.base.validate();
+    require(canvas.base.width <= 8192 && canvas.base.height <= 8192, "图层工程画布单边不能超过 8192 像素");
+    size_t bytes = canvas.base.rgba.size() * 2; // Immutable base plus editable composite.
+    for (const auto& layer : canvas.layers)
+        for (const auto& tile : layer.tiles) {
+            tile.image.validate();
+            require(tile.image.rgba.size() <= paintProjectByteBudget - bytes,
+                    "单画布底图、合成图和图层像素超过 2 GiB");
+            bytes += tile.image.rgba.size();
+        }
+    require(bytes <= paintProjectByteBudget, "单画布底图、合成图和图层像素超过 2 GiB");
+    return bytes;
+}
+std::string pngHash(std::span<const uint8_t> bytes) {
+    struct Crypto {
+        HCRYPTPROV provider = 0;
+        HCRYPTHASH hash = 0;
+        ~Crypto() {
+            if (hash)
+                CryptDestroyHash(hash);
+            if (provider)
+                CryptReleaseContext(provider, 0);
+        }
+    } crypto;
+    require(CryptAcquireContextW(&crypto.provider, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT) &&
+                CryptCreateHash(crypto.provider, CALG_SHA_256, 0, 0, &crypto.hash) &&
+                bytes.size() <= std::numeric_limits<DWORD>::max() &&
+                CryptHashData(crypto.hash, bytes.data(), DWORD(bytes.size()), 0),
+            "无法计算图层 PNG 的 SHA-256 校验");
+    std::array<uint8_t, 32> digest{};
+    DWORD count = DWORD(digest.size());
+    require(CryptGetHashParam(crypto.hash, HP_HASHVAL, digest.data(), &count, 0) && count == digest.size(),
+            "无法读取图层 PNG 校验");
+    std::ostringstream out;
+    out << std::hex << std::setfill('0');
+    for (auto byte : digest)
+        out << std::setw(2) << unsigned(byte);
+    return out.str();
+}
+// A losslessly encoded 8192 RGBA canvas can be slightly larger than its 256 MiB pixels.
+constexpr size_t projectPngBytes = 258ull * 1024 * 1024;
+PaintImage decodeProjectPng(std::span<const uint8_t> bytes) {
+    ComApartment apartment;
+    DirectX::ScratchImage decoded, converted;
+    require(SUCCEEDED(DirectX::LoadFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_FORCE_RGB,
+                                                 nullptr, decoded)),
+            "无法解码工程 PNG");
+    const auto* pixels = decoded.GetImage(0, 0, 0);
+    require(pixels != nullptr && pixels->width <= 8192 && pixels->height <= 8192, "工程 PNG 尺寸无效");
+    if (pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM && pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+        require(SUCCEEDED(DirectX::Convert(*pixels, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_DEFAULT,
+                                           0, converted)),
+                "无法转换工程 PNG");
+        pixels = converted.GetImage(0, 0, 0);
+    }
+    PaintImage result(uint32_t(pixels->width), uint32_t(pixels->height));
+    for (uint32_t y = 0; y < result.height; ++y)
+        std::memcpy(result.rgba.data() + size_t(y) * result.width * 4, pixels->pixels + y * pixels->rowPitch,
+                    size_t(result.width) * 4);
+    return result;
+}
+Json saveLayerImage(const PaintImage& image, const fs::path& directory, const std::string& file,
+                    const std::atomic_bool* cancel) {
+    cancelled(cancel);
+    const auto bytes = image.pngBytes();
+    cancelled(cancel);
+    writeFile(directory / wide(file), bytes);
+    return {{"file", file},
+            {"width", image.width},
+            {"height", image.height},
+            {"image_fingerprint", imageFingerprint(image)},
+            {"png_sha256", pngHash(bytes)}};
+}
+Json saveLayerState(const Scene& scene, const PaintSnapshot& images, const PaintLayerSnapshotMap& snapshots,
+                    const Json& flattened, const fs::path& directory, Progress progress,
+                    const std::atomic_bool* cancel) {
+    require(snapshots.size() == images.size(), "每个绘制材质都必须提供完整图层快照");
+    for (const auto& [material, snapshot] : snapshots)
+        require(images.contains(material) && snapshot, "图层快照材料索引无效或为空");
+    const auto& first = *snapshots.begin()->second;
+    const auto descriptions = layerInfos(first);
+    Json result = {{"version", 1},
+                   {"layers", descriptions},
+                   {"active_layer", first.activeLayer},
+                   {"canvases", Json::array()}};
+    std::map<const PaintCanvasLayers*, size_t> known;
+    size_t expanded = 0;
+    for (const auto& entry : flattened) {
+        cancelled(cancel);
+        const int material = entry.at("material").get<int>();
+        auto found = snapshots.find(material);
+        if (found == snapshots.end())
+            found = std::find_if(snapshots.begin(), snapshots.end(), [&](const auto& candidate) {
+                return lower(scene.materials[candidate.first].name) == lower(scene.materials[material].name);
+            });
+        require(found != snapshots.end(), "展开的同名绘制材质缺少图层快照");
+        const auto& snapshot = *found->second;
+        require(layerInfos(snapshot) == descriptions && snapshot.activeLayer == first.activeLayer,
+                "跨材质的图层顺序、属性或活动图层不一致");
+        auto existing = known.find(&snapshot);
+        if (existing != known.end()) {
+            require(result["canvases"][existing->second]["composite_fingerprint"] ==
+                        entry.at("image_fingerprint"),
+                    "共享图层快照对应了不同的合成图像");
+            result["canvases"][existing->second]["materials"].push_back(material);
+            continue;
+        }
+        const auto bytes = snapshotBytes(snapshot);
+        require(bytes <= paintProjectByteBudget - expanded, "工程底图、合成图和图层像素展开后超过 2 GiB");
+        expanded += bytes;
+        // Reuse the editing engine's exact validation and compositing rules. Never publish a
+        // project whose layer state reconstructs a different image from its exported preview.
+        PaintCanvas verified(PaintImage(1, 1));
+        verified.restoreLayers(snapshot);
+        require(sameImage(verified.image(), *images.at(found->first)),
+                "图层快照与合成图像不一致，请结束当前绘制后重试保存");
+        const auto number = known.size();
+        const std::string stem = "layers/canvas_" + std::to_string(number);
+        Json canvas = {{"materials", Json::array({material})},
+                       {"composite_fingerprint", entry.at("image_fingerprint")},
+                       {"base", saveLayerImage(snapshot.base, directory, stem + "_base.png", cancel)},
+                       {"layers", Json::array()}};
+        for (const auto& layer : snapshot.layers) {
+            cancelled(cancel);
+            Json saved = {{"id", layer.info.id}, {"tiles", Json::array()}};
+            for (const auto& tile : layer.tiles) {
+                const auto file = stem + "_layer_" + std::to_string(layer.info.id) + "_" +
+                                  std::to_string(tile.x) + "_" + std::to_string(tile.y) + ".png";
+                auto tileRecord = saveLayerImage(tile.image, directory, file, cancel);
+                tileRecord["x"] = tile.x;
+                tileRecord["y"] = tile.y;
+                saved["tiles"].push_back(std::move(tileRecord));
+            }
+            canvas["layers"].push_back(std::move(saved));
+        }
+        known[&snapshot] = result["canvases"].size();
+        result["canvases"].push_back(std::move(canvas));
+        if (progress)
+            progress("保存完整图层 " + std::to_string(known.size()));
+    }
+    result["expanded_bytes"] = expanded;
+    return result;
+}
 bool meaningful(const std::string& name) {
     return name.find_first_not_of(" \t\r\n") != std::string::npos;
 }
@@ -179,7 +343,8 @@ struct Staging {
 };
 Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& directory, const std::string& name,
           std::shared_ptr<Livery> livery, const fs::path& textureDirectory, Progress progress,
-          const std::atomic_bool* cancel, bool recovery, bool assetsOnly = false) {
+          const std::atomic_bool* cancel, bool recovery, bool assetsOnly = false,
+          const PaintLayerSnapshotMap& layerCanvases = {}) {
     require(assetsOnly || !images.empty(), "尚无可保存的绘制材质");
     require(!directory.empty(), "请选择保存目录");
     cancelled(cancel);
@@ -200,15 +365,17 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
                                                                    "。请先统一同名材质的绘制图像。");
     }
     size_t expandedBytes = 0;
-    constexpr size_t editingBudget = 1024ull * 1024 * 1024;
-    for (const auto& [key, image] : groupImages)
-        for (size_t copy = 0; copy < groups.at(key).size(); ++copy) {
-            require(image->rgba.size() <= editingBudget - expandedBytes,
-                    "按材质展开的工程画布超过 1 GiB 编辑预算");
-            expandedBytes += image->rgba.size();
-        }
+    constexpr size_t editingBudget = paintProjectByteBudget;
+    if (layerCanvases.empty()) { // v3 explicit ownership is charged in saveLayerState.
+        for (const auto& [key, image] : groupImages)
+            for (size_t copy = 0; copy < groups.at(key).size(); ++copy) {
+                require(image->rgba.size() <= editingBudget - expandedBytes,
+                        "按材质展开的工程画布超过 2 GiB 编辑预算");
+                expandedBytes += image->rgba.size();
+            }
+    }
     Json manifest = {{"format", "EDM Studio Paint"},
-                     {"version", 2},
+                     {"version", layerCanvases.empty() ? 2 : 3},
                      {"source", pathString(scene.source)},
                      {"scene_fingerprint", sceneFingerprint(scene, cancel)},
                      {"name", name},
@@ -446,10 +613,15 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
             manifest["self_contained"] = false;
     }
     manifest["directory"] = pathString(staging.final);
+    if (!layerCanvases.empty())
+        manifest["layer_state"] = saveLayerState(scene, images, layerCanvases, manifest["textures"],
+                                                 staging.directory, progress, cancel);
     if (progress)
         progress("完成工程与 DCS 涂装配置");
     cancelled(cancel);
-    writeJson(staging.directory / "project.edmpaint.json", manifest);
+    const auto serialized = manifest.dump(2, ' ', false, Json::error_handler_t::strict);
+    require(serialized.size() <= paintProjectManifestBytes, "图层工程清单超过 64 MiB 限制");
+    textFile(staging.directory / "project.edmpaint.json", serialized);
     if (!recovery)
         textFile(staging.directory / "description.lua", description.str());
     if (progress)
@@ -493,9 +665,10 @@ Json paintAssemblyMetadata(const Scene& scene) {
 
 Json savePaintProject(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                       const std::string& name, std::shared_ptr<Livery> livery,
-                      const fs::path& textureDirectory, Progress progress, const std::atomic_bool* cancel) {
+                      const fs::path& textureDirectory, Progress progress, const std::atomic_bool* cancel,
+                      const PaintLayerSnapshotMap& layerCanvases) {
     return save(scene, images, directory, name, std::move(livery), textureDirectory, std::move(progress),
-                cancel, false);
+                cancel, false, false, layerCanvases);
 }
 Json exportLiveryAssets(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                         const std::string& name, std::shared_ptr<Livery> livery,
@@ -520,7 +693,7 @@ Json exportLiveryAssetsFromPng(const Scene& scene, const std::map<int, std::vect
         require(metadata.width && metadata.height && metadata.width <= 8192 && metadata.height <= 8192,
                 "导出绘制图像单边不能超过 8192 像素");
         const auto required = metadata.width * metadata.height * 4;
-        require(required <= 1024ull * 1024 * 1024 - expandedBytes, "导出绘制图像超过 1 GiB 编辑预算");
+        require(required <= paintProjectByteBudget - expandedBytes, "导出绘制图像超过 2 GiB 编辑预算");
         expandedBytes += required;
         DirectX::ScratchImage loaded, converted;
         require(SUCCEEDED(DirectX::LoadFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_FORCE_RGB,
@@ -546,18 +719,40 @@ Json exportLiveryAssetsFromPng(const Scene& scene, const std::map<int, std::vect
 }
 Json savePaintRecovery(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                        Progress progress, const std::atomic_bool* cancel, std::shared_ptr<Livery> livery,
-                       const fs::path& textureDirectory) {
+                       const fs::path& textureDirectory, const PaintLayerSnapshotMap& layerCanvases) {
     return save(scene, images, directory, "未保存绘制恢复", std::move(livery), textureDirectory,
-                std::move(progress), cancel, true);
+                std::move(progress), cancel, true, false, layerCanvases);
 }
 namespace {
+std::map<int, size_t> layerOwnership(const Json& manifest, size_t materialCount) {
+    std::map<int, size_t> result;
+    if (manifest.value("version", 0) != 3)
+        return result;
+    const auto& state = manifest.at("layer_state");
+    require(state.is_object() && state.at("canvases").is_array() && !state["canvases"].empty() &&
+                state["canvases"].size() <= materialCount,
+            "图层工程共享画布记录无效");
+    for (size_t i = 0; i < state["canvases"].size(); ++i) {
+        const auto& members = state["canvases"][i].at("materials");
+        require(members.is_array() && !members.empty() && members.size() <= materialCount,
+                "图层工程共享材质记录无效");
+        for (const auto& member : members) {
+            const int material = int(
+                unsignedInteger(member, uint64_t(std::numeric_limits<int>::max()), "图层工程材质索引无效"));
+            require(size_t(material) < materialCount && result.emplace(material, i).second,
+                    "图层工程材质索引无效或重复");
+        }
+    }
+    return result;
+}
 PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json& manifest,
                          const std::atomic_bool* cancel, const PaintLoadOptions& options) {
     cancelled(cancel);
-    require(options.maxExpandedBytes > 0 && options.maxExpandedBytes <= 1024ull * 1024 * 1024,
-            "工程加载预算必须在 1 字节至 1 GiB 之间");
-    require(manifest.value("format", "") == "EDM Studio Paint" && manifest.value("version", 0) == 2,
-            "不是受支持的 EDM 绘制工程（需要版本 2 的完整材质身份）");
+    require(options.maxExpandedBytes > 0 && options.maxExpandedBytes <= paintProjectByteBudget,
+            "工程加载预算必须在 1 字节至 2 GiB 之间");
+    require(manifest.value("format", "") == "EDM Studio Paint" &&
+                (manifest.value("version", 0) == 2 || manifest.value("version", 0) == 3),
+            "不是受支持的 EDM 绘制工程（需要版本 2 或 3 的完整材质身份）");
     require(manifest.at("scene_fingerprint").get<std::string>() == sceneFingerprint(scene, cancel),
             "绘制工程的模型 / UV / 材质身份与当前模型不匹配");
     require(manifest.at("textures").is_array() && !manifest["textures"].empty() &&
@@ -565,13 +760,26 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
             "绘制工程材质数量不匹配");
     const auto root = fs::weakly_canonical(project.parent_path());
     PaintSnapshot out;
+    const auto ownership = layerOwnership(manifest, scene.materials.size());
+    const bool layered = manifest.value("version", 0) == 3;
+    std::map<size_t, std::pair<std::shared_ptr<const PaintImage>, std::string>> sharedComposites;
     size_t totalBytes = 0;
     std::map<fs::path, std::pair<std::shared_ptr<const PaintImage>, std::string>> loaded;
     for (const auto& entry : manifest["textures"]) {
         cancelled(cancel);
-        const int index = entry.at("material").get<int>();
+        const int index = int(unsignedInteger(entry.at("material"), uint64_t(std::numeric_limits<int>::max()),
+                                              "无效绘制材质索引"));
         require(index >= 0 && index < int(scene.materials.size()) && !out.contains(index),
                 "无效或重复的绘制材质索引");
+        require(!layered || ownership.contains(index), "绘制材质缺少完整图层画布");
+        const auto owner = layered ? ownership.at(index) : size_t(index);
+        const auto alias = sharedComposites.find(owner);
+        const bool shared = layered && alias != sharedComposites.end();
+        if (shared)
+            require(entry.at("width") == alias->second.first->width &&
+                        entry.at("height") == alias->second.first->height &&
+                        entry.at("image_fingerprint") == alias->second.second,
+                    "共享画布对应了不同的合成图像");
         require(entry.at("material_name") == scene.materials[index].name &&
                     entry.at("material_identity") == materialIdentity(scene.materials[index]),
                 "绘制工程与当前模型材质不匹配");
@@ -589,7 +797,7 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
             image = existing->second.first;
             checksum = existing->second.second;
         } else {
-            auto bytes = readFile(path, 256ull * 1024 * 1024);
+            auto bytes = readFile(path, projectPngBytes);
             constexpr std::array<uint8_t, 8> signature{137, 80, 78, 71, 13, 10, 26, 10};
             require(bytes.size() >= signature.size() &&
                         std::equal(signature.begin(), signature.end(), bytes.begin()),
@@ -602,17 +810,29 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
             require(metadata.width && metadata.height && metadata.width <= 8192 && metadata.height <= 8192,
                     "工程画布单边不能超过 8192 像素");
             const uint64_t expectedBytes = uint64_t(metadata.width) * metadata.height * 4;
-            require(expectedBytes <= options.maxExpandedBytes - totalBytes,
+            require(shared || expectedBytes <= options.maxExpandedBytes - totalBytes,
                     "按材质展开的工程画布超过编辑预算");
+            if (shared)
+                require(metadata.width == alias->second.first->width &&
+                            metadata.height == alias->second.first->height,
+                        "共享画布 PNG 的实际尺寸不一致");
             cancelled(cancel);
-            image = std::make_shared<PaintImage>(PaintImage::load(ImageSource{path}, 0));
+            image = std::make_shared<PaintImage>(decodeProjectPng(bytes));
             checksum = imageFingerprint(*image);
             loaded[path] = {image, checksum};
         }
-        // A deduplicated PNG still becomes a separate mutable canvas for every material in the UI.
-        require(image->rgba.size() <= options.maxExpandedBytes - totalBytes,
-                "按材质展开的工程画布超过编辑预算");
-        totalBytes += image->rgba.size();
+        // v2 is independently expanded. Only v3's explicit ownership permits a shared canvas.
+        if (shared) {
+            require(sameImage(*image, *alias->second.first), "共享画布的合成 PNG 像素不一致");
+            image = alias->second.first;
+            loaded[path] = {image, checksum};
+        } else {
+            require(image->rgba.size() <= options.maxExpandedBytes - totalBytes,
+                    "按材质展开的工程画布超过编辑预算");
+            totalBytes += image->rgba.size();
+            if (layered)
+                sharedComposites.emplace(owner, std::make_pair(image, checksum));
+        }
         require(entry.at("width") == image->width && entry.at("height") == image->height &&
                     entry.at("image_fingerprint").get<std::string>() == checksum,
                 "工程图片尺寸或像素校验不匹配，文件可能已更改或损坏");
@@ -620,6 +840,147 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
     }
     cancelled(cancel);
     return out;
+}
+PaintImage loadLayerImage(const Json& record, const fs::path& root, const std::atomic_bool* cancel) {
+    cancelled(cancel);
+    const auto width = unsignedInteger(record.at("width"), 8192, "图层 PNG 宽度无效");
+    const auto height = unsignedInteger(record.at("height"), 8192, "图层 PNG 高度无效");
+    require(width && height, "图层 PNG 尺寸不能为空");
+    const auto file = record.at("file").get<std::string>();
+    const fs::path relative = wide(file);
+    require(!relative.empty() && !relative.is_absolute() && !relative.has_root_name() &&
+                !relative.has_root_directory() && file.find(':') == std::string::npos &&
+                file.find('\0') == std::string::npos && lower(pathString(relative.extension())) == ".png",
+            "图层图片必须是工程内的 PNG 相对路径");
+    const auto path = fs::weakly_canonical(root / relative);
+    require(within(path, root) && fs::is_regular_file(path), "图层图片路径超出工程目录或文件不存在");
+    const auto bytes = readFile(path, projectPngBytes);
+    constexpr std::array<uint8_t, 8> signature{137, 80, 78, 71, 13, 10, 26, 10};
+    require(bytes.size() >= signature.size() && std::equal(signature.begin(), signature.end(), bytes.begin()),
+            "图层图片不是 PNG 文件");
+    require(record.at("png_sha256").get<std::string>() == pngHash(bytes), "图层 PNG 文件 SHA-256 校验失败");
+    DirectX::TexMetadata metadata;
+    ComApartment apartment;
+    require(SUCCEEDED(DirectX::GetMetadataFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_NONE,
+                                                        metadata)) &&
+                metadata.width == width && metadata.height == height,
+            "图层 PNG 元数据尺寸与工程声明不同");
+    cancelled(cancel);
+    auto image = decodeProjectPng(bytes);
+    require(image.width == width && image.height == height &&
+                record.at("image_fingerprint").get<std::string>() == imageFingerprint(image),
+            "图层 PNG 像素校验失败");
+    return image;
+}
+void loadLayerState(PaintProjectDocument& document, const Json& manifest, const fs::path& root,
+                    const std::atomic_bool* cancel, const PaintLoadOptions& options) {
+    if (manifest.value("version", 0) != 3)
+        return;
+    const auto& state = manifest.at("layer_state");
+    require(state.is_object() && state.value("version", 0) == 1 && state.at("layers").is_array() &&
+                !state["layers"].empty() && state["layers"].size() <= 64 && state.at("canvases").is_array() &&
+                !state["canvases"].empty() && state["canvases"].size() <= document.images.size(),
+            "图层工程结构或版本无效");
+    const auto active = unsignedInteger(state.at("active_layer"), UINT64_MAX, "活动图层编号无效");
+    PaintCanvasLayers metadata;
+    metadata.base = PaintImage(1, 1);
+    metadata.activeLayer = active;
+    std::vector<PaintLayerInfo> layers;
+    for (const auto& entry : state["layers"]) {
+        PaintLayerInfo layer;
+        layer.id = unsignedInteger(entry.at("id"), UINT64_MAX, "图层编号无效");
+        layer.name = entry.at("name").get<std::string>();
+        layer.visible = entry.at("visible").get<bool>();
+        require(entry.at("opacity").is_number(), "图层不透明度不是数字");
+        const double opacity = entry["opacity"].get<double>();
+        require(std::isfinite(opacity) && opacity >= 0 && opacity <= 1, "图层不透明度必须在 0 与 1 之间");
+        layer.opacity = float(opacity);
+        layer.preserveAlpha = entry.at("preserve_alpha").get<bool>();
+        metadata.layers.push_back({layer, {}});
+        layers.push_back(std::move(layer));
+    }
+    PaintCanvas validateMetadata(PaintImage(1, 1));
+    validateMetadata.restoreLayers(std::move(metadata));
+    size_t expanded = 0;
+    PaintLayerSnapshotMap snapshots;
+    for (const auto& entry : state["canvases"]) {
+        cancelled(cancel);
+        require(entry.is_object() && entry.at("materials").is_array() && !entry["materials"].empty() &&
+                    entry["materials"].size() <= document.images.size() && entry.at("layers").is_array() &&
+                    entry["layers"].size() == layers.size(),
+                "图层画布材质或图层数量无效");
+        std::vector<int> materials;
+        std::set<int> uniqueMaterials;
+        const auto& base = entry.at("base");
+        const auto width = unsignedInteger(base.at("width"), 8192, "图层底图宽度无效");
+        const auto height = unsignedInteger(base.at("height"), 8192, "图层底图高度无效");
+        require(width && height, "图层底图尺寸不能为空");
+        const size_t compositeBytes = size_t(width * height * 4);
+        size_t additional = compositeBytes;
+        for (const auto& materialValue : entry["materials"]) {
+            const int material = int(unsignedInteger(materialValue, uint64_t(std::numeric_limits<int>::max()),
+                                                     "图层画布材质编号无效"));
+            require(document.images.contains(material) && !snapshots.contains(material) &&
+                        uniqueMaterials.insert(material).second,
+                    "图层画布材质编号无效或重复");
+            const auto& flat = *document.images.at(material);
+            require(flat.width == width && flat.height == height, "图层底图与合成图尺寸不一致");
+            materials.push_back(material);
+        }
+        for (size_t index = 0; index < layers.size(); ++index) {
+            const auto& layer = entry["layers"][index];
+            require(unsignedInteger(layer.at("id"), UINT64_MAX, "画布图层编号无效") == layers[index].id &&
+                        layer.at("tiles").is_array() &&
+                        layer["tiles"].size() <= ((width + 63) / 64) * ((height + 63) / 64),
+                    "画布图层顺序或稀疏块数量无效");
+            std::set<std::pair<uint32_t, uint32_t>> tiles;
+            for (const auto& tile : layer["tiles"]) {
+                const auto x = unsignedInteger(tile.at("x"), 8191, "图层块 X 坐标无效");
+                const auto y = unsignedInteger(tile.at("y"), 8191, "图层块 Y 坐标无效");
+                require(x < width && y < height && x % 64 == 0 && y % 64 == 0 &&
+                            tiles.emplace(uint32_t(x), uint32_t(y)).second,
+                        "图层块坐标越界、未对齐或重复");
+                const auto w = unsignedInteger(tile.at("width"), 64, "图层块宽度无效");
+                const auto h = unsignedInteger(tile.at("height"), 64, "图层块高度无效");
+                require(w == std::min(uint64_t(64), width - x) && h == std::min(uint64_t(64), height - y),
+                        "图层块尺寸与画布边缘不一致");
+                additional += size_t(w * h * 4);
+                require(additional + compositeBytes <= paintProjectByteBudget,
+                        "单画布底图、合成图和图层像素超过 2 GiB");
+            }
+        }
+        require(additional + compositeBytes <= options.maxExpandedBytes - expanded,
+                "工程底图、合成图和图层像素展开后超过加载预算");
+        expanded += additional + compositeBytes;
+        auto snapshot = std::make_shared<PaintCanvasLayers>();
+        snapshot->base = loadLayerImage(base, root, cancel);
+        snapshot->activeLayer = active;
+        for (size_t index = 0; index < layers.size(); ++index) {
+            PaintLayerSnapshot layer{layers[index], {}};
+            for (const auto& tile : entry["layers"][index]["tiles"]) {
+                cancelled(cancel);
+                layer.tiles.push_back({tile.at("x").get<uint32_t>(), tile.at("y").get<uint32_t>(),
+                                       loadLayerImage(tile, root, cancel)});
+            }
+            snapshot->layers.push_back(std::move(layer));
+        }
+        PaintCanvas verified(PaintImage(1, 1));
+        verified.restoreLayers(*snapshot);
+        for (int material : materials) {
+            require(sameImage(verified.image(), *document.images.at(material)),
+                    "完整图层合成结果与工程预览不一致");
+            snapshots.emplace(material, snapshot);
+        }
+    }
+    require(snapshots.size() == document.images.size(), "完整图层数据未覆盖全部绘制材质");
+    if (state.contains("expanded_bytes"))
+        require(unsignedInteger(state["expanded_bytes"], paintProjectByteBudget, "图层预算声明无效") ==
+                    expanded,
+                "图层工程实际展开像素数与声明不同");
+    document.layerCanvases = std::move(snapshots);
+    document.layers = std::move(layers);
+    document.activeLayer = active;
+    cancelled(cancel);
 }
 void appendWarnings(PaintProjectDocument& document, const Json& warnings) {
     if (warnings.is_array())
@@ -738,15 +1099,20 @@ void restoreSnapshot(PaintProjectDocument& document, const Json& appearance) {
 PaintSnapshot loadPaintProject(const Scene& scene, const fs::path& project, const std::atomic_bool* cancel,
                                const PaintLoadOptions& options) {
     cancelled(cancel);
-    return loadImages(scene, project, Json::parse(readFile(project, 2000000)), cancel, options);
+    const auto manifest = Json::parse(readFile(project, paintProjectManifestBytes));
+    PaintProjectDocument document;
+    document.images = loadImages(scene, project, manifest, cancel, options);
+    loadLayerState(document, manifest, fs::weakly_canonical(project.parent_path()), cancel, options);
+    return document.images;
 }
 PaintProjectDocument loadPaintDocument(const Scene& scene, const fs::path& project,
                                        const std::atomic_bool* cancel, const PaintLoadOptions& options) {
     cancelled(cancel);
-    const auto manifest = Json::parse(readFile(project, 2000000));
+    const auto manifest = Json::parse(readFile(project, paintProjectManifestBytes));
     PaintProjectDocument document;
     document.assembly = manifest.value("assembly", Json::object());
     document.images = loadImages(scene, project, manifest, cancel, options);
+    loadLayerState(document, manifest, fs::weakly_canonical(project.parent_path()), cancel, options);
     appendWarnings(document, manifest.value("warnings", Json::array()));
     if (manifest.value("recovery_only", false)) {
         if (manifest.contains("appearance"))

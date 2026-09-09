@@ -3,12 +3,18 @@
 
 namespace edm {
 using PaintSnapshot = std::map<int, std::shared_ptr<const PaintImage>>;
+using PaintLayerSnapshotMap = std::map<int, std::shared_ptr<const PaintCanvasLayers>>;
+inline constexpr size_t paintProjectByteBudget = 2ull * 1024 * 1024 * 1024;
+inline constexpr size_t paintProjectManifestBytes = 64ull * 1024 * 1024;
 struct PaintLoadOptions {
-    // The UI expands each material into an independent canvas, even when PNG files are shared.
-    size_t maxExpandedBytes = 1024ull * 1024 * 1024;
+    // v2 expands per material; v3 counts each explicitly shared canvas once.
+    size_t maxExpandedBytes = paintProjectByteBudget;
 };
 struct PaintProjectDocument {
     PaintSnapshot images;
+    PaintLayerSnapshotMap layerCanvases;
+    std::vector<PaintLayerInfo> layers;
+    uint64_t activeLayer = 0;
     bool restoreAppearance = false;
     // restoreAppearance=true and livery=nullptr explicitly restores the model's default appearance.
     std::shared_ptr<Livery> livery;
@@ -20,7 +26,8 @@ struct PaintProjectDocument {
 Json savePaintProject(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                       const std::string& name, std::shared_ptr<Livery> livery = {},
                       const fs::path& textureDirectory = {}, Progress progress = {},
-                      const std::atomic_bool* cancel = nullptr);
+                      const std::atomic_bool* cancel = nullptr,
+                      const PaintLayerSnapshotMap& layerCanvases = {});
 // Export a self-contained DCS livery even if no materials have been painted.
 // Both entries create a unique child directory; existing files are never overwritten.
 Json exportLiveryAssets(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
@@ -41,5 +48,6 @@ PaintProjectDocument loadPaintDocument(const Scene& scene, const fs::path& proje
 // Fast PNG-only recovery, using the same verified project format. It is not a DCS livery.
 Json savePaintRecovery(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                        Progress progress = {}, const std::atomic_bool* cancel = nullptr,
-                       std::shared_ptr<Livery> livery = {}, const fs::path& textureDirectory = {});
+                       std::shared_ptr<Livery> livery = {}, const fs::path& textureDirectory = {},
+                       const PaintLayerSnapshotMap& layerCanvases = {});
 } // namespace edm

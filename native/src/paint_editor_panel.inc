@@ -77,6 +77,7 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
         gap();
         PaintDisabledScope operationsDisabled(p.controlsBusy());
         const bool posed = p.surface && p.surfaceArgs == args;
+#include "paint_editor_layers_panel.inc"
 
         // Each mode is usable before any editable canvas exists. Loading images and applying them
         // precede placement details, so the primary action stays near the tool switcher.
@@ -156,7 +157,6 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
             if (ImGui::CollapsingHeader("投影表面与预览")) {
                 ImGui::Checkbox("仅投影朝向相机的表面", &p.projectionFront);
                 ImGui::Checkbox("跳过被其他部件遮挡处", &p.projectionOcclusion);
-                ImGui::Checkbox("保留原始透明遮罩", &p.preserveAlpha);
                 ImGui::SetNextItemWidth(-1);
                 ImGui::SliderFloat("##projection-preview-opacity", &p.projectionPreviewOpacity, .05f, .8f,
                                    "定位预览透明度 %.2f");
@@ -175,7 +175,6 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
             ImGui::SliderFloat("##paint-opacity", &p.opacity, .01f, 1, "不透明度 %.2f");
             ImGui::SetNextItemWidth(-1);
             ImGui::SliderFloat("##paint-hardness", &p.hardness, 0, 1, "硬度 %.2f");
-            ImGui::Checkbox("保留原始透明遮罩", &p.preserveAlpha);
             paintHint(p.tool == 1 ? "左键直接绘制，跨过部件时自动切换对应贴图。"
                                   : "选择直接画笔，然后在模型表面落笔。");
         }
@@ -184,18 +183,14 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
         // Batch history is owned by a worker during image application. Do not query it while busy.
         {
             PaintDisabledScope undoDisabled(p.controlsBusy() || !p.history.canUndo());
-            if (ImGui::Button("撤销整次操作", {width, 31}) && p.history.undo()) {
-                p.saved = false;
-                p.status = "已撤销 · 恢复 " + std::to_string(p.history.changedMaterials().size()) + " 张贴图";
-            }
+            if (ImGui::Button("撤销整次操作", {width, 31}))
+                p.undoLayerEdit();
         }
         ImGui::SameLine();
         {
             PaintDisabledScope redoDisabled(p.controlsBusy() || !p.history.canRedo());
-            if (ImGui::Button("重做整次操作", {width, 31}) && p.history.redo()) {
-                p.saved = false;
-                p.status = "已重做 · 更新 " + std::to_string(p.history.changedMaterials().size()) + " 张贴图";
-            }
+            if (ImGui::Button("重做整次操作", {width, 31}))
+                p.undoLayerEdit(true);
         }
         gap();
         ImGui::Separator();
@@ -214,13 +209,13 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
         if (ImGui::Combo("##paint-resolution", &quality, qualityNames, 3))
             p.paintMaxDimension = std::array<int, 3>{2048, 4096, 8192}[quality];
         paintHint("首次触及自动载入当前外观，已编辑画布不重采样。");
-        if (ImGui::Button("加载平面涂装模板…", {-1, 32}))
-            if (auto path = paintDialog(window, L"载入供下一次落笔使用的平面模板", 0))
+        if (ImGui::Button("将模板载入当前图层…", {-1, 32}))
+            if (auto path = paintDialog(window, L"下一次落笔将模板放入当前图层", 0))
                 p.queueTemplate(renderer, *path);
         if (p.pendingTemplate)
             ImGui::TextColored({.38f, .78f, .64f, 1}, "模板已就绪 · 下次落笔自动应用");
         else
-            paintHint("模板自动用于下一次落笔部位，无需选择材质。");
+            paintHint("下次落笔自动定位贴图，模板替换该贴图的当前层，其他层保留。");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("支持 PNG / DDS / TGA / JPG；PSD 图层请先导出平面 PNG。");
 

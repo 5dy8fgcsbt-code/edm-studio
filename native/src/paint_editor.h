@@ -28,6 +28,7 @@ class PaintEditor {
     bool busy() const;
     bool hasEdits() const;
     PaintSnapshot snapshot() const;
+    PaintLayerSnapshotMap layerSnapshot() const;
     std::optional<PaintProjectDocument> takeRestoredAppearance();
     // Used before replacing a document or closing the application to preserve unfinished work.
     void recover(const fs::path& directory) const;
@@ -38,6 +39,7 @@ class PaintEditor {
     bool exerciseProjection(Renderer& renderer, const fs::path& image, const fs::path& output);
     bool exerciseStroke(Renderer& renderer);
     bool exerciseProject(Renderer& renderer, const fs::path& directory);
+    bool exerciseLayers(Renderer& renderer, const Args& args, const fs::path& directory);
     bool exerciseAutomatic(Renderer& renderer, const fs::path& image, const fs::path& directory,
                            int maximumDimension = 512);
     bool exerciseDecal(Renderer& renderer, const fs::path& image, const fs::path& directory,

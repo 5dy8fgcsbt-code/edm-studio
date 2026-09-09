@@ -40,7 +40,6 @@ if (ImGui::CollapsingHeader("贴合深度与表面")) {
     paintHint("限制落点前后的投射厚度；弯曲表面漏印时可适当增加。");
     placementChanged |= ImGui::Checkbox("只投射朝外的表面", &p.decalFront);
     placementChanged |= ImGui::Checkbox("跳过被其他部件遮挡处", &p.decalOcclusion);
-    placementChanged |= ImGui::Checkbox("保留原始透明遮罩", &p.preserveAlpha);
     if (ImGui::Button("重置大小与旋转", {-1, 29})) {
         p.decalWidth = p.decalHeight = float(std::max(.02, renderer.camera.radius * .08));
         p.decalDepth = p.decalWidth * .2f;

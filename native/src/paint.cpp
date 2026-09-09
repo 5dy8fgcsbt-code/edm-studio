@@ -177,6 +177,7 @@ void PaintImage::saveDDS(const fs::path& path) const {
 }
 
 struct PaintCanvas::Impl {
+#include "paint_layers_types.inc"
     struct Tile {
         uint32_t x = 0, y = 0, width = 0, height = 0;
         std::vector<uint8_t> before, after;
@@ -185,22 +186,26 @@ struct PaintCanvas::Impl {
         uint64_t token = 0;
         std::string label;
         std::vector<Tile> tiles;
+        std::shared_ptr<LayerState> layerBefore, layerAfter;
+        size_t layerBytes = 0;
+        size_t compositeSize = 0;
+        size_t compositeBytes() const noexcept {
+            return compositeSize;
+        }
         size_t bytes() const {
-            size_t result = 0;
-            for (const auto& tile : tiles)
-                result += tile.before.size() + tile.after.size();
-            return result;
+            return compositeBytes() + layerBytes;
         }
     };
     PaintImage image;
     std::optional<PaintRect> dirty;
     uint64_t revision = 1;
-    size_t budget, history = 0;
+    size_t budget, history = 0, compositeHistory = 0;
     std::vector<std::shared_ptr<Entry>> undo, redo;
     std::shared_ptr<Entry> active;
     bool prepared = false;
     uint64_t preparedUndo = 0, preparedRedo = 0;
     std::unordered_map<uint32_t, size_t> touched;
+    std::unique_ptr<LayerData> layerData;
     explicit Impl(PaintImage pixels, size_t memory) : image(std::move(pixels)), budget(memory) {
         image.validate();
         dirty = PaintRect{0, 0, int(image.width), int(image.height)};
@@ -241,9 +246,13 @@ struct PaintCanvas::Impl {
         tile.width = std::min(tileSize, image.width - tile.x);
         tile.height = std::min(tileSize, image.height - tile.y);
         tile.before = copy(tile);
+        if (active->tiles.size() == active->tiles.capacity())
+            active->tiles.reserve(std::max(size_t(1), active->tiles.capacity() * 2));
         touched.emplace(key, active->tiles.size());
+        active->compositeSize += tile.before.size();
         active->tiles.push_back(std::move(tile));
     }
+#include "paint_layers_impl.inc"
 };
 PaintCanvas::PaintCanvas(PaintImage image, size_t historyBudget)
     : impl(std::make_unique<Impl>(std::move(image), historyBudget)) {}
@@ -268,7 +277,14 @@ void PaintCanvas::beginStroke(std::string label) {
     require(!impl->active, "A paint operation is already active");
     auto active = std::make_shared<Impl::Entry>();
     active->label = std::move(label);
+    std::shared_ptr<Impl::LayerState> working;
+    if (impl->layerData) {
+        active->layerBefore = impl->layerData->state;
+        working = std::make_shared<Impl::LayerState>(*active->layerBefore);
+    }
     impl->active = std::move(active);
+    if (working)
+        impl->layerData->state = std::move(working);
     impl->prepared = false;
     impl->preparedUndo = impl->preparedRedo = 0;
     impl->touched.clear();
@@ -280,13 +296,32 @@ bool PaintCanvas::prepareStroke() {
     // Keep before tiles intact until every allocation succeeds, so another canvas failing preparation
     // can still cancel this canvas without changing its existing undo/redo branch.
     auto& entry = *impl->active;
-    for (auto& tile : entry.tiles)
-        tile.after = impl->copy(tile);
-    std::erase_if(entry.tiles, [](const Impl::Tile& tile) { return tile.before == tile.after; });
-    if (!entry.tiles.empty()) {
+    for (auto& tile : entry.tiles) {
+        if (impl->layerData)
+            impl->requireStorage(tile.before.size() - tile.after.size());
+        auto after = impl->copy(tile);
+        entry.compositeSize += after.size() - tile.after.size();
+        tile.after = std::move(after);
+    }
+    const bool layersChanged =
+        impl->layerData && !Impl::sameLayers(*entry.layerBefore, *impl->layerData->state);
+    if (layersChanged) {
+        entry.layerAfter = impl->layerData->state;
+        entry.layerBytes = Impl::layerHistoryBytes(*entry.layerBefore, *entry.layerAfter);
+    }
+    if (!entry.tiles.empty() || layersChanged) {
         impl->undo.reserve(impl->undo.size() + 1);
         entry.token = reservePaintHistoryToken();
     }
+    // Erase only after all fallible preparation, keeping touched indices valid if preparation fails.
+    std::erase_if(entry.tiles, [&](const Impl::Tile& tile) {
+        if (tile.before != tile.after)
+            return false;
+        entry.compositeSize -= tile.before.size() + tile.after.size();
+        return true;
+    });
+    if (entry.tiles.empty() && !layersChanged)
+        entry.token = 0;
     impl->prepared = true;
     return entry.token != 0;
 }
@@ -299,13 +334,17 @@ uint64_t PaintCanvas::commitPreparedStroke() noexcept {
     auto token = impl->active->token;
     if (token) {
         // prepareStroke has reserved vector capacity; shared_ptr movement cannot allocate or throw.
-        for (const auto& discarded : impl->redo)
+        for (const auto& discarded : impl->redo) {
             impl->history -= discarded->bytes();
+            impl->compositeHistory -= discarded->compositeBytes();
+        }
         impl->redo.clear();
         impl->history += impl->active->bytes();
+        impl->compositeHistory += impl->active->compositeBytes();
         impl->undo.push_back(impl->active);
         while (impl->undo.size() > 1 && impl->history > impl->budget) {
             impl->history -= impl->undo.front()->bytes();
+            impl->compositeHistory -= impl->undo.front()->compositeBytes();
             impl->undo.erase(impl->undo.begin());
         }
     }
@@ -323,6 +362,8 @@ void PaintCanvas::cancelStroke() noexcept {
         return;
     for (const auto& tile : impl->active->tiles)
         impl->restore(tile, tile.before);
+    if (impl->active->layerBefore)
+        impl->layerData->state = impl->active->layerBefore;
     impl->active.reset();
     impl->prepared = false;
     impl->touched.clear();
@@ -365,6 +406,8 @@ bool PaintCanvas::commitPreparedUndo(uint64_t token) noexcept {
     impl->undo.pop_back();
     for (const auto& tile : entry->tiles)
         impl->restore(tile, tile.before);
+    if (entry->layerBefore)
+        impl->layerData->state = entry->layerBefore;
     impl->redo.push_back(std::move(entry));
     impl->preparedUndo = impl->preparedRedo = 0;
     return true;
@@ -376,6 +419,8 @@ bool PaintCanvas::commitPreparedRedo(uint64_t token) noexcept {
     impl->redo.pop_back();
     for (const auto& tile : entry->tiles)
         impl->restore(tile, tile.after);
+    if (entry->layerAfter)
+        impl->layerData->state = entry->layerAfter;
     impl->undo.push_back(std::move(entry));
     impl->preparedUndo = impl->preparedRedo = 0;
     return true;
@@ -389,6 +434,8 @@ bool PaintCanvas::redo() {
     return prepareRedo(token) && commitPreparedRedo(token);
 }
 bool PaintCanvas::blendPixel(int x, int y, const F4& color, float coverage, bool preserveAlpha) {
+    if (impl->layerData)
+        return impl->blendLayerPixel(x, y, color, coverage);
     if (!impl->active)
         throw std::runtime_error("Painting requires an active undo transaction");
     if (impl->prepared)
@@ -423,6 +470,8 @@ bool PaintCanvas::blendPixel(int x, int y, const F4& color, float coverage, bool
     ++impl->revision;
     return true;
 }
+
+#include "paint_layers.inc"
 
 V3 PaintTriangle::normal() const {
     V3 result = normals[0] + normals[1] + normals[2];

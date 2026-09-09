@@ -32,21 +32,21 @@ canvasLoader(const std::vector<int>& materials) {
     std::set<int> missing;
     for (int actual : materials) {
         int index = canvasIndex(actual);
-        if (!entries.contains(index) || (pendingTemplate && pendingTemplateTarget == index))
+        if (!entries.contains(index))
             missing.insert(index);
     }
     size_t bytes = 0;
     for (const auto& [index, entry] : entries)
         if (!missing.contains(index))
-            bytes += entry.canvas->image().rgba.size();
+            bytes += entry.canvas->storageBytes();
     auto source = scene;
     auto skin = strokePending() ? strokeLivery : livery;
     auto extra = strokePending() ? strokeTextureDirectory : textureDirectory;
-    auto templateImage = pendingTemplate;
-    auto templateName = pendingTemplateName;
-    int templateTarget = pendingTemplateTarget, dimension = paintMaxDimension;
-    return [source, skin, extra, missing, bytes, templateImage, templateName, templateTarget,
-            dimension](Progress progress, const std::atomic_bool* cancel) mutable {
+    int dimension = paintMaxDimension;
+    auto layers = layerInfos;
+    auto active = activeLayerId;
+    return [source, skin, extra, missing, bytes, dimension, layers,
+            active](Progress progress, const std::atomic_bool* cancel) mutable {
         auto prepared = std::make_shared<PreparedCanvases>();
         TextureResolver resolver(source->source, extra, skin);
         for (int index : missing) {
@@ -55,10 +55,7 @@ canvasLoader(const std::vector<int>& materials) {
                 progress("自动准备贴图 · " + source->materials.at(index).name);
             PaintImage image;
             std::string name;
-            if (templateImage && templateTarget == index) {
-                image = *templateImage;
-                name = templateName;
-            } else if (auto texture = resolver.material(source->materials.at(index))) {
+            if (auto texture = resolver.material(source->materials.at(index))) {
                 image = PaintImage::load(*texture, dimension);
                 name = texture->key();
             } else {
@@ -66,10 +63,12 @@ canvasLoader(const std::vector<int>& materials) {
                 name = "自动创建空白贴图";
             }
             require(!cancel || !*cancel, "Cancelled");
-            bytes += image.rgba.size();
-            require(bytes <= 1024ull * 1024 * 1024,
-                    "绘制贴图超过 1 GiB 预算，请缩小覆盖范围或降低新贴图分辨率。");
-            prepared->emplace(index, Entry{std::make_shared<PaintCanvas>(std::move(image)), {}, name, {}});
+            auto canvas = std::make_shared<PaintCanvas>(std::move(image));
+            canvas->enableLayers(layers, active);
+            bytes += canvas->storageBytes();
+            require(bytes <= 2ull * 1024 * 1024 * 1024,
+                    "绘制贴图超过 2 GiB 预算，请缩小覆盖范围或降低新贴图分辨率。");
+            prepared->emplace(index, Entry{std::move(canvas), {}, name, {}});
         }
         return prepared;
     };
@@ -78,23 +77,14 @@ void installCanvases(PreparedCanvases& prepared) {
     for (auto& [index, entry] : prepared) {
         if (strokePending() && !entries.contains(index))
             strokeNewCanvases.insert(index);
-        if (strokePending() && pendingTemplate && pendingTemplateTarget == index && entries.contains(index))
-            strokeReplacedCanvases.emplace(index, std::move(entries.at(index)));
         entries[index] = std::move(entry);
-        if (pendingTemplate && pendingTemplateTarget == index) {
-            strokeTemplateIndex = index;
-            strokeTemplateInstalled = true;
-            pendingTemplate.reset();
-            pendingTemplateTarget = -1;
-        }
     }
 }
 bool requestCanvases(const std::vector<int>& materials, bool synchronous) {
     ensureAliases();
     bool missing = false;
     for (int index : materials)
-        missing |= !entries.contains(canvasIndex(index)) ||
-                   (pendingTemplate && pendingTemplateTarget == canvasIndex(index));
+        missing |= !entries.contains(canvasIndex(index));
     if (!missing)
         return true;
     auto loader = canvasLoader(materials);
@@ -113,28 +103,67 @@ bool requestCanvases(const std::vector<int>& materials, bool synchronous) {
 }
 void queueTemplate(Renderer&, const fs::path& path) {
     require(!controlsBusy(), "请等待当前绘制任务完成");
-    auto recoveryImages = saved ? PaintSnapshot{} : snapshot();
-    auto source = scene;
-    auto base = livery;
-    auto extra = textureDirectory;
-    auto recovery = recoveryRoot;
-    start([this, path, recoveryImages, source, base, extra, recovery](Progress progress,
-                                                                      const std::atomic_bool* cancel) {
-        if (!recoveryImages.empty())
-            savePaintRecovery(*source, recoveryImages, recovery, progress, cancel, base, extra);
+    start([this, path](Progress progress, const std::atomic_bool* cancel) {
         if (progress)
             progress("读取模板 · 下一次落笔自动定位贴图…");
         auto loaded = std::make_shared<PaintImage>(PaintImage::load(ImageSource{path}, 8192));
         require(!*cancel, "Cancelled");
         return [this, path, loaded] {
-            history.clear();
             pendingTemplate = loaded;
             pendingTemplateName = pathString(path);
             pendingTemplateTarget = -1;
             tool = 1;
-            status = "模板已就绪 · 在模型上落笔，自动用模板替换该位置的贴图";
+            status = "模板已就绪 · 下次落笔将模板放入当前图层，其他图层保留";
         };
     });
+}
+bool installLayerTemplate(bool synchronous) {
+    if (!pendingTemplate || pendingTemplateTarget < 0 || strokeTemplateInstalled ||
+        !entries.contains(pendingTemplateTarget))
+        return true;
+    auto canvas = entries.at(pendingTemplateTarget).canvas;
+    auto source = pendingTemplate;
+    const auto layer = activeLayerId;
+    const auto target = pendingTemplateTarget;
+    history.touch(target, canvas);
+    auto apply = [canvas, source, layer](Progress progress, const std::atomic_bool* cancel) {
+        if (progress)
+            progress("将模板放入当前图层…");
+        require(!cancel || !*cancel, "Cancelled");
+        const auto& destination = canvas->image();
+        if (source->width == destination.width && source->height == destination.height)
+            canvas->replaceLayerImage(layer, *source);
+        else {
+            auto texture = source->texture();
+            DirectX::ScratchImage resized;
+            require(SUCCEEDED(DirectX::Resize(*texture->pixels.GetImage(0, 0, 0), destination.width,
+                                              destination.height, DirectX::TEX_FILTER_DEFAULT, resized)),
+                    "无法将模板缩放到当前贴图大小");
+            PaintImage image(destination.width, destination.height, {0, 0, 0, 0});
+            const auto* pixels = resized.GetImage(0, 0, 0);
+            for (uint32_t row = 0; row < image.height; ++row)
+                std::memcpy(image.rgba.data() + size_t(row) * image.width * 4,
+                            pixels->pixels + size_t(row) * pixels->rowPitch, size_t(image.width) * 4);
+            require(!cancel || !*cancel, "Cancelled");
+            canvas->replaceLayerImage(layer, image);
+        }
+    };
+    if (synchronous) {
+        apply({}, nullptr);
+        strokeTemplateIndex = target;
+        strokeTemplateInstalled = true;
+        return true;
+    }
+    start(
+        [this, target, apply](Progress progress, const std::atomic_bool* cancel) {
+            apply(progress, cancel);
+            return [this, target] {
+                strokeTemplateIndex = target;
+                strokeTemplateInstalled = true;
+            };
+        },
+        true);
+    return false;
 }
 std::vector<int> brushMaterials(const StrokeContext& context, const PaintHit& hit) const {
     std::set<int> ids;
@@ -149,6 +178,7 @@ template <class Options, class Find, class Apply>
 void startAutomaticMapping(Options options, Find find, Apply apply, bool verify, bool projection,
                            bool decal = false) {
     require(!controlsBusy(), "请等待当前绘制任务完成");
+    requireWritableLayer();
     require(mappingImage && surface && surfaceArgs == currentArgs, "请载入图片并等待当前姿态的绘制表面就绪");
     ensureAliases();
     auto source = mappingImage;
@@ -171,7 +201,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
     size_t existingBytes = 0;
     for (const auto& [index, entry] : entries) {
         existing[index] = entry.canvas;
-        existingBytes += entry.canvas->image().rgba.size();
+        existingBytes += entry.canvas->storageBytes();
     }
     auto prepared = std::make_shared<PreparedCanvases>();
     struct Outcome {
@@ -187,6 +217,8 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
         saved = outcome->committed && outcome->changed ? false : wasSaved;
     };
     int dimension = paintMaxDimension;
+    auto layers = layerInfos;
+    auto active = activeLayerId;
     previousHit.reset();
     projectionDragging = false;
     (projection ? projectionResult : decal ? decalResult : wrapResult) = Json();
@@ -194,7 +226,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
     try {
         start(
             [this, options, find, apply, verify, projection, decal, source, posed, budget, aliases, base,
-             model, extra, existing, existingBytes, dimension, prepared,
+             model, extra, existing, existingBytes, dimension, layers, active, prepared,
              outcome](Progress progress, const std::atomic_bool* cancel) mutable {
                 options.limits = budget->remaining();
                 auto candidates = find(*posed, options, progress, cancel);
@@ -210,6 +242,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                 std::map<int, std::shared_ptr<PaintCanvas>> verifiedCanvases;
                 struct Pending {
                     int index = -1;
+                    size_t allocatedBytes = 0;
                     std::shared_ptr<PaintCanvas> canvas;
                     Options options;
                     std::future<PaintMappingReport> future;
@@ -244,6 +277,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                             budget->remaining();
                             auto& task = pending[count];
                             task.index = index;
+                            task.allocatedBytes = 0;
                             if (existing.contains(index))
                                 task.canvas = existing.at(index);
                             else {
@@ -257,10 +291,12 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                                     image = PaintImage(dimension, dimension);
                                     name = "自动创建空白贴图";
                                 }
-                                bytes += image.rgba.size();
-                                require(bytes <= 1024ull * 1024 * 1024,
-                                        "绘制内容超过 1 GiB，请缩小范围或降低新贴图分辨率；此次操作已回滚。");
                                 task.canvas = std::make_shared<PaintCanvas>(std::move(image));
+                                task.canvas->enableLayers(layers, active);
+                                task.allocatedBytes = task.canvas->storageBytes();
+                                bytes += task.allocatedBytes;
+                                require(bytes <= 2ull * 1024 * 1024 * 1024,
+                                        "绘制内容超过 2 GiB，请缩小范围或降低新贴图分辨率；此次操作已回滚。");
                                 prepared->emplace(index, Entry{task.canvas, {}, name, {}});
                             }
                             require(scheduledCanvases.insert(task.canvas).second,
@@ -341,7 +377,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                                         total.warnings.push_back(warning);
                             if (!report.changed && history.discardUnchanged(task.canvas)) {
                                 if (prepared->erase(task.index))
-                                    bytes -= task.canvas->image().rgba.size();
+                                    bytes -= task.allocatedBytes;
                                 before.erase(task.index);
                             } else if (verify)
                                 verifiedCanvases[task.index] = task.canvas;
@@ -349,6 +385,21 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                         }
                     }
                     checkCancelled();
+                    size_t finalBytes = 0;
+                    std::set<const PaintCanvas*> counted;
+                    const auto count = [&](const std::shared_ptr<PaintCanvas>& canvas) {
+                        if (!counted.insert(canvas.get()).second)
+                            return;
+                        if (canvas->strokeActive())
+                            canvas->prepareStroke();
+                        finalBytes += canvas->storageBytes();
+                    };
+                    for (const auto& [index, canvas] : existing)
+                        count(canvas);
+                    for (const auto& [index, entry] : *prepared)
+                        count(entry.canvas);
+                    require(finalBytes <= 2ull * 1024 * 1024 * 1024,
+                            "图层像素超过 2 GiB 编辑预算，此次图片绘制已回滚");
                     outcome->changed = history.commit();
                     outcome->committed = true;
                 } catch (...) {

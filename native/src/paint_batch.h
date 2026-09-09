@@ -16,6 +16,9 @@ class PaintBatchHistory {
     void begin(std::string label = "连续表面画笔");
     // Opens this canvas's stroke on its first touch; aliases sharing one canvas are opened only once.
     PaintCanvas& touch(int material, std::shared_ptr<PaintCanvas> canvas);
+    // One metadata-only anchor per batch. It has independent undo tokens and never contributes a
+    // material index to notifications. The anchor survives material removal/remapping.
+    PaintCanvas& touchControl(std::shared_ptr<PaintCanvas> canvas);
     // Removes every alias of an unchanged canvas and releases its active stroke. Changed canvases
     // remain prepared for commit; they may gain more aliases but cannot receive further pixels.
     // A preparation exception leaves batch ownership and all history branches unchanged.
