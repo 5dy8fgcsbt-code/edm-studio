@@ -1,4 +1,6 @@
-# EDM Studio Native 0.11.0
+# EDM Studio Native 0.11.1
+
+0.11.1 修复首次绘制将原贴图默认缩到 2048 的清晰度问题：现在默认保留原图尺寸，最高 8192，并保留 4096/2048 内存节省选项。贴花面板显示画布尺寸及落点附近可用像素估计。旧工程的低分辨率像素无法自动恢复，需要从原涂装重新绘制。
 
 Windows 原生 C++20 / Dear ImGui / Direct3D 11 桌面程序。直接打开 DCS EDM v8/v10，预览参数动画、涂装、RoughMet 和动态编号，导出 GLB / glTF 2.0 / OBJ / FBX。运行时不需要 Python、Qt、DCS、Blender 或网络。
 

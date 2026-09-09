@@ -68,6 +68,7 @@ struct GpuTexture {
     Com<ID3D11ShaderResourceView> view, linearView;
     size_t bytes = 0;
     int width = 0, height = 0;
+    int sourceWidth = 0, sourceHeight = 0;
 };
 // Surface-attached preview only: it never modifies texture canvases or model geometry.
 // Frame axes must be orthonormal, with right cross up == normal; image V points down.

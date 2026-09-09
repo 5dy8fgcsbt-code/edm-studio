@@ -7,6 +7,7 @@
 #include "paint_projection.h"
 #include "paint_decal.h"
 #include "paint_conform.h"
+#include "paint_quality.h"
 #include <imgui_stdlib.h>
 #include <shobjidl.h>
 #include <future>
@@ -192,7 +193,7 @@ struct PaintEditor::Impl {
     uint64_t generation = 0;
     int material = -1, tool = 0;
     int lastPanelTool = -1;
-    int paintMaxDimension = 2048;
+    int paintMaxDimension = DefaultPaintMaxDimension;
     PaintBatchHistory history;
     std::vector<PaintLayerInfo> layerInfos{{1, "图层 1", true, 1, true}};
     uint64_t activeLayerId = 1, nextLayerId = 2;

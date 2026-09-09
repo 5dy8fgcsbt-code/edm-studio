@@ -9,6 +9,8 @@ if (ImGui::Button(p.mappingImage ? "更换贴花图片…" : "加载贴花图片
 }
 paintHint(!posed ? "正在准备模型表面…" : "图片跟随鼠标贴在模型表面，左键单击盖印。");
 imagePreview();
+paintQuality();
+decalResolution();
 gap();
 bool placementChanged = false;
 ImGui::SetNextItemWidth(-1);

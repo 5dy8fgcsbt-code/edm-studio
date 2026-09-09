@@ -321,6 +321,8 @@ std::shared_ptr<GpuTexture> uploadTexture(ID3D11Device* device, const TextureIma
     Com<ID3D11Texture2D> texture;
     dx(device->CreateTexture2D(&d, initial.data(), &texture), "Upload material texture");
     auto out = std::make_shared<GpuTexture>();
+    out->sourceWidth = int(meta.width);
+    out->sourceHeight = int(meta.height);
     D3D11_SHADER_RESOURCE_VIEW_DESC srv{};
     srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
     srv.Texture2D.MipLevels = d.MipLevels;

@@ -28,6 +28,70 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
         const auto name = pathString(fs::path(wide(p.mappingPath)).filename());
         ImGui::TextWrapped("%s · %u × %u", name.c_str(), p.mappingImage->width, p.mappingImage->height);
     };
+    const auto paintQuality = [&] {
+        const char* names[] = {"保留原图 · 最高 8192（默认）", "限制 4096 · 节省内存", "限制 2048 · 节省内存"};
+        int quality = p.paintMaxDimension >= 8192 ? 0 : p.paintMaxDimension >= 4096 ? 1 : 2;
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::Combo("##paint-resolution", &quality, names, 3))
+            p.paintMaxDimension = std::array<int, 3>{DefaultPaintMaxDimension, 4096, 2048}[quality];
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("绘制画布上限，独立于视口贴图预算。小图不放大；只影响首次触及的新画布。\n旧低分辨率盖印无法通过改选项恢复细节，需要从原涂装重新绘制。");
+    };
+    const auto decalResolution = [&] {
+        // Never inspect canvases while the bake worker owns their pixels or layer state.
+        if (p.controlsBusy() || !p.decalHit || !p.surface || p.surfaceArgs != args || p.decalPose != args)
+            return;
+        const int id = p.decalHit->material;
+        const auto found = p.entries.find(p.canvasIndex(id));
+        uint32_t w = 0, h = 0;
+        const bool existing = found != p.entries.end();
+        if (existing) {
+            w = found->second.canvas->image().width;
+            h = found->second.canvas->image().height;
+        } else if (id >= 0 && size_t(id) < renderer.textures.material.size()) {
+            auto texture = renderer.textures.images.find(renderer.textures.material[id][0]);
+            if (texture != renderer.textures.images.end() && texture->second) {
+                w = uint32_t(std::max(0, texture->second->sourceWidth));
+                h = uint32_t(std::max(0, texture->second->sourceHeight));
+                while (std::max(w, h) > uint32_t(p.paintMaxDimension)) {
+                    w = std::max(1u, w / 2);
+                    h = std::max(1u, h / 2);
+                }
+            }
+        }
+        if (!w || !h)
+            return;
+        ImGui::TextDisabled(existing ? "当前画布 %u × %u" : "预计新画布 %u × %u", w, h);
+        if (existing && std::max(w, h) < uint32_t(p.paintMaxDimension))
+            paintHint("当前画布尺寸保持不变；更高上限仅用于新画布。");
+        auto options = p.decalOptions();
+        const auto& triangle = p.surface->triangle(p.decalHit->primitive);
+        std::array<Eigen::Vector2d, 3> coordinates;
+        if (p.decalConforming) {
+            if (!options.conformPatch)
+                return;
+            const auto& triangles = options.conformPatch->triangles;
+            auto seed = std::lower_bound(triangles.begin(), triangles.end(), p.decalHit->primitive,
+                [](const auto& item, size_t primitive) { return item.primitive < primitive; });
+            if (seed == triangles.end() || seed->primitive != p.decalHit->primitive)
+                return;
+            coordinates = seed->coordinates;
+        } else {
+            const auto frame = surfaceDecalFrame(options);
+            for (int i = 0; i < 3; ++i) {
+                const V3 delta = triangle.world[i] - frame.center;
+                coordinates[i] = {delta.dot(frame.right), delta.dot(frame.up)};
+            }
+        }
+        if (auto estimate = estimateDecalTexels(triangle, coordinates, w, h, options.width, options.height)) {
+            ImGui::TextDisabled("贴花局部约 %.0f × %.0f 像素", estimate->width, estimate->height);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("按落点附近的 UV 密度估算。曲面上各处可能不同；小贴花只占贴图的一小部分。\n浮动预览直接采样图片，盖印细节最终受目标贴图像素数限制。");
+            if (p.mappingImage && (estimate->width < p.mappingImage->width * .75 ||
+                                   estimate->height < p.mappingImage->height * .75))
+                paintHint("落点可用像素少于原图；放大贴花可保留更多细节。");
+        }
+    };
     const auto resultSummary = [&](const Json& result) {
         if (!result.is_object())
             return;
@@ -210,12 +274,10 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
             paintHint("当前表面：将鼠标移到模型上自动识别");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("这里只显示识别结果，绘制范围由落笔位置或图片覆盖范围决定。");
-        const char* qualityNames[] = {"2048 · 流畅", "4096 · 精细", "8192 · 高精度"};
-        int quality = p.paintMaxDimension >= 8192 ? 2 : p.paintMaxDimension >= 4096 ? 1 : 0;
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("##paint-resolution", &quality, qualityNames, 3))
-            p.paintMaxDimension = std::array<int, 3>{2048, 4096, 8192}[quality];
-        paintHint("首次触及自动载入当前外观，已编辑画布不重采样。");
+        if (p.tool != 2) {
+            paintQuality();
+            paintHint("首次触及保留原图尺寸；已编辑画布不重采样。");
+        }
         if (ImGui::Button("将模板载入当前图层…", {-1, 32}))
             if (auto path = paintDialog(window, L"下一次落笔将模板放入当前图层", 0))
                 p.queueTemplate(renderer, *path);

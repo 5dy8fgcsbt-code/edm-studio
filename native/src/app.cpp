@@ -2068,9 +2068,10 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
     if (!app.decalTestDirectory.empty()) {
         require(!initial.empty() && !app.decalTestImage.empty(),
                 "Surface decal diagnostic requires an EDM path and --decal-image PNG");
-        require(app.decalTestDimension == 512 || app.decalTestDimension == 1024 ||
-                    app.decalTestDimension == 2048,
-                "Surface decal diagnostic texture size must be 512, 1024 or 2048");
+        require(app.decalTestDimension == 0 || app.decalTestDimension == 512 ||
+                    app.decalTestDimension == 1024 || app.decalTestDimension == 2048 ||
+                    app.decalTestDimension == 4096 || app.decalTestDimension == 8192,
+                "Surface decal diagnostic texture size must be 0 (editor default), 512, 1024, 2048, 4096 or 8192");
         require(app.autoPaintDirectory.empty() && app.paintMaterial.empty() && app.wrapImage.empty() &&
                     app.projectionImage.empty() && !app.strokeTest && app.paintProjectDirectory.empty(),
                 "Run the surface decal diagnostic independently");

@@ -185,12 +185,14 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             require(p.entries.empty() && !p.strokePending() && !p.history.active(),
                     "Surface decal diagnostic must start without prepared canvases");
             require(fs::is_regular_file(image), "Surface decal source image does not exist");
-            require(maximumDimension == 512 || maximumDimension == 1024 || maximumDimension == 2048,
-                    "Surface decal diagnostic supports 512, 1024 or 2048 textures");
+            require(maximumDimension == 0 || maximumDimension == 512 || maximumDimension == 1024 ||
+                        maximumDimension == 2048 || maximumDimension == 4096 || maximumDimension == 8192,
+                    "Surface decal diagnostic supports 0 (editor default), 512, 1024, 2048, 4096 or 8192 textures");
             require(!fs::exists(directory / "project"), "Use a fresh surface decal diagnostic directory");
             fs::create_directories(directory);
             p.recoveryRoot = directory / "recovery";
-            p.paintMaxDimension = maximumDimension;
+            if (maximumDimension)
+                p.paintMaxDimension = maximumDimension;
             p.ensureAliases();
             p.tool = 2;
             p.decalConforming = conforming;
@@ -200,7 +202,8 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                                        {"model", pathString(p.scene->source)},
                                        {"source_image", pathString(image)},
                                        {"initial_canvases", p.entries.size()},
-                                       {"maximum_new_texture_dimension", maximumDimension},
+                                       {"maximum_new_texture_dimension", p.paintMaxDimension},
+                                       {"uses_editor_default_resolution", maximumDimension == 0},
                                        {"manual_material_selection", false}};
             p.decalDiagnosticResult["surface_conforming"] = conforming;
             publish("loading_image_and_surface");
@@ -378,6 +381,27 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticFirst = snapshot();
             require(p.history.undo(), "First surface decal could not be undone");
             p.decalDiagnosticBefore = snapshot();
+            if (!maximumDimension) {
+                TextureResolver resolver(p.scene->source, p.textureDirectory, p.livery);
+                Json resolutions = Json::array();
+                for (const auto& [id, entry] : p.entries) {
+                    auto source = resolver.material(p.scene->materials.at(id), 0);
+                    if (!source)
+                        continue;
+                    // Compare against the real source before any cap chosen for a diagnostic or
+                    // viewport budget. This catches first-touch downsampling hidden by equal-base
+                    // preview/bake comparisons below.
+                    auto original = PaintImage::load(*source, DefaultPaintMaxDimension);
+                    const auto& canvas = *p.decalDiagnosticBefore.at(id);
+                    require(original.width == canvas.width && original.height == canvas.height &&
+                                original.rgba == canvas.rgba,
+                            "Default first stamp reduced source resolution or changed original base pixels");
+                    resolutions.push_back({{"material", id}, {"width", canvas.width},
+                                           {"height", canvas.height}, {"source_pixels_preserved", true}});
+                }
+                require(!resolutions.empty(), "Default resolution diagnostic found no original textures");
+                p.decalDiagnosticResult["default_source_resolution_check"] = std::move(resolutions);
+            }
             size_t different = 0;
             for (int index : changed)
                 different +=
