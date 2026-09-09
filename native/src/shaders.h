@@ -7,7 +7,7 @@ struct Pose{row_major float4x4 world;row_major float4x4 normal;};
 StructuredBuffer<Mesh> meshes:register(t0);StructuredBuffer<Pose> poses:register(t1);StructuredBuffer<float4> numberOffsets:register(t2);
 Texture2D diffuseMap:register(t3);Texture2D roughMap:register(t4);Texture2D decalMap:register(t5);SamplerState texSampler:register(s0);
 Texture2D surfaceImage:register(t6);Texture2D<float> surfaceDepth:register(t7);
-struct SurfaceConformTriangle{float4 mappingX;float4 mappingY;uint triangleIndex;uint3 padding;};
+struct SurfaceConformTriangle{float4 mappingX;float4 mappingY;float4 clipPlane;uint triangleIndex;uint3 padding;};
 StructuredBuffer<uint2> surfaceConformRanges:register(t8);StructuredBuffer<SurfaceConformTriangle> surfaceConformTriangles:register(t9);
 struct Input{float3 position:POSITION;float3 normal:NORMAL;float2 uv:TEXCOORD0;float2 roughUV:TEXCOORD1;float2 decalUV:TEXCOORD2;uint4 joints0:BLENDINDICES0;uint4 joints1:BLENDINDICES1;float4 weights0:BLENDWEIGHT0;float4 weights1:BLENDWEIGHT1;uint selector:TEXCOORD3;uint instance:TEXCOORD4;};
 struct Output{float4 position:SV_Position;float3 world:POSITION0;float3 normal:NORMAL0;float3 surfaceNormal:NORMAL1;float2 uv:TEXCOORD0;float2 roughUV:TEXCOORD1;float2 decalUV:TEXCOORD2;nointerpolation uint mesh:TEXCOORD3;};
@@ -30,7 +30,7 @@ float4 surfaceConformBlend(float4 base,Mesh mesh,float4 ink){
  else{float destinationAlpha=mesh.color.a>1e-12?saturate(base.a/mesh.color.a):0;float alpha=ink.a+destinationAlpha*(1-ink.a);base.rgb=surfaceLinear((ink.rgb*ink.a+destination*destinationAlpha*(1-ink.a))/max(alpha,1e-20));base.a=alpha*mesh.color.a;}
  return base;
 }
-float4 surfaceConformFiltered(float4 base,Mesh mesh,float2 uv,float2 dx,float2 dy){
+float4 surfaceConformFiltered(float4 base,Mesh mesh,float2 uv,float2 dx,float2 dy,float4 clipPlane){
  uint width,height;surfaceImage.GetDimensions(width,height);float2 size=float2(width,height);
  uint countX=(uint)clamp(ceil(length(dx*size)),1,8),countY=(uint)clamp(ceil(length(dy*size)),1,8);
  float4 total=0;
@@ -38,7 +38,9 @@ float4 surfaceConformFiltered(float4 base,Mesh mesh,float2 uv,float2 dx,float2 d
  // light. Integrate that same order; sampling only source mip zero aliases fine decal lettering.
  [loop]for(uint y=0;y<countY;y++){[loop]for(uint x=0;x<countX;x++){
   float2 offset=dx*((x+.5)/countX-.5)+dy*((y+.5)/countY-.5),sampleUV=uv+offset;
-  total+=any(sampleUV<0)||any(sampleUV>1)?base:surfaceConformBlend(base,mesh,surfaceSample(sampleUV));
+  float2 sampleXY=float2((sampleUV.x-.5)*surfaceCenterWidth.w,(.5-sampleUV.y)*surfaceRightHeight.w);
+  bool outside=any(sampleUV<0)||any(sampleUV>1)||(clipPlane.w>.5&&dot(clipPlane.xyz,float3(sampleXY,1))< -1e-6);
+  total+=outside?base:surfaceConformBlend(base,mesh,surfaceSample(sampleUV));
  }}
  return total/(countX*countY);
 }
@@ -54,6 +56,7 @@ float4 surfaceConformPreview(float4 base,Output i,uint primitive){
  float2 shadowUV=projectedNdc.xy*float2(.5,-.5)+.5;float depth=projectedNdc.z;
  float3 dx=ddx(float3(shadowUV,depth)),dy=ddy(float3(shadowUV,depth));float2 du=ddx(i.uv),dv=ddy(i.uv);
  if(any(uv<0)||any(uv>1)||abs(du.x*dv.y-du.y*dv.x)<1e-20)return base;
+ if(mapping.clipPlane.w>.5&&dot(mapping.clipPlane.xyz,float3(xy,1))< -1e-6)return base;
  if(surfaceOptions.y>.5&&dot(i.surfaceNormal*surfaceConformEye.w,surfaceConformEye.xyz-i.world)<=1e-8)return base;
  if(surfaceOptions.z>.5){
   if(projected.w<=0||any(shadowUV<0)||any(shadowUV>1)||depth<0||depth>1)return base;
@@ -67,7 +70,7 @@ float4 surfaceConformPreview(float4 base,Output i,uint primitive){
    if(receiver-bias>surfaceDepth.Load(int3(p,0)))return base;
   }}
  }
- return surfaceConformFiltered(base,meshes[i.mesh],uv,imageDx,imageDy);
+ return surfaceConformFiltered(base,meshes[i.mesh],uv,imageDx,imageDy,mapping.clipPlane);
 }
 float4 surfacePreview(float4 base,Output i,uint primitive){
  Mesh mesh=meshes[i.mesh];if(surfaceOptions.x<.5||(mesh.pad&2)==0||mesh.decal)return base;

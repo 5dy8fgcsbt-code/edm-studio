@@ -30,6 +30,8 @@ std::optional<DecalFootprint> clippedFootprint(const PaintTriangle& triangle, co
                                                const std::optional<V3>& eye = {}) {
     if (!triangle.hasUV)
         return {};
+    require(!chart || !chart->clipPlane || chart->clipPlane->allFinite(),
+            "Surface decal contains an invalid contact clipping plane");
     if (!chart && frontFacesOnly && std::none_of(triangle.normals.begin(), triangle.normals.end(),
                                        [&](const V3& n) { return n.dot(frame.normal) > 0; }))
         return {};
@@ -49,7 +51,7 @@ std::optional<DecalFootprint> clippedFootprint(const PaintTriangle& triangle, co
         if (!local[i].allFinite())
             throw std::runtime_error("Surface decal encountered non-finite world coordinates");
     }
-    // Six planes can grow a convex triangle to at most nine vertices. Keep original barycentrics,
+    // Box planes plus an optional T-contact half-plane retain original barycentrics,
     // so UV clipping does not alter the final original-triangle interpolation or seam coverage.
     std::array<V3, 16> polygon{}, output{};
     polygon[0] = V3::UnitX();
@@ -57,41 +59,48 @@ std::optional<DecalFootprint> clippedFootprint(const PaintTriangle& triangle, co
     polygon[2] = V3::UnitZ();
     size_t count = 3;
     const V3 extent(frame.width * .5, frame.height * .5, frame.depth);
-    for (int axis = 0; axis < 3; ++axis)
-        for (double sign : {-1., 1.}) {
-            if (!count)
-                return {};
-            size_t size = 0;
-            const double slack = 1e-10 * (1 + extent[axis]);
-            auto distance = [&](const V3& barycentric) {
-                double coordinate = local[0][axis] * barycentric.x() + local[1][axis] * barycentric.y() +
-                                    local[2][axis] * barycentric.z();
-                return extent[axis] - sign * coordinate + slack;
-            };
-            auto append = [&](const V3& vertex) {
-                if (size && (vertex - output[size - 1]).squaredNorm() == 0)
-                    return;
-                if (size == output.size())
-                    throw std::runtime_error("Surface decal clipping capacity exceeded");
-                output[size++] = vertex;
-            };
-            V3 previous = polygon[count - 1];
-            double before = distance(previous);
-            for (size_t i = 0; i < count; ++i) {
-                V3 current = polygon[i];
-                double after = distance(current);
-                if ((before >= 0) != (after >= 0))
-                    append(previous + (current - previous) * (before / (before - after)));
-                if (after >= 0)
-                    append(current);
-                previous = current;
-                before = after;
+    const bool contactClip = chart && chart->clipPlane.has_value();
+    for (int plane = 0; plane < (contactClip ? 7 : 6); ++plane) {
+        const int axis = std::min(2, plane / 2);
+        const double sign = plane % 2 ? 1. : -1.;
+        if (!count)
+            return {};
+        size_t size = 0;
+        const double slack = 1e-10 * (1 + extent[axis]);
+        auto distance = [&](const V3& barycentric) {
+            if (plane == 6) {
+                const V3 point = local[0] * barycentric.x() + local[1] * barycentric.y() +
+                                 local[2] * barycentric.z();
+                return chart->clipPlane->dot(V3(point.x(), point.y(), 1)) + 1e-9;
             }
-            if (size > 1 && (output[0] - output[size - 1]).squaredNorm() == 0)
-                --size;
-            polygon = output;
-            count = size;
+            double coordinate = local[0][axis] * barycentric.x() + local[1][axis] * barycentric.y() +
+                                local[2][axis] * barycentric.z();
+            return extent[axis] - sign * coordinate + slack;
+        };
+        auto append = [&](const V3& vertex) {
+            if (size && (vertex - output[size - 1]).squaredNorm() == 0)
+                return;
+            if (size == output.size())
+                throw std::runtime_error("Surface decal clipping capacity exceeded");
+            output[size++] = vertex;
+        };
+        V3 previous = polygon[count - 1];
+        double before = distance(previous);
+        for (size_t i = 0; i < count; ++i) {
+            V3 current = polygon[i];
+            double after = distance(current);
+            if ((before >= 0) != (after >= 0))
+                append(previous + (current - previous) * (before / (before - after)));
+            if (after >= 0)
+                append(current);
+            previous = current;
+            before = after;
         }
+        if (size > 1 && (output[0] - output[size - 1]).squaredNorm() == 0)
+            --size;
+        polygon = output;
+        count = size;
+    }
     if (!count)
         return {};
     DecalFootprint footprint{{1e100, 1e100, -1e100, -1e100},
@@ -279,6 +288,8 @@ PaintMappingReport applySurfaceDecal(const PaintSurface& surface, PaintCanvas& c
                                     chart->coordinates[2] * barycentric.z()) :
                     Eigen::Vector2d(delta.dot(frame.right), delta.dot(frame.up));
                 const double dx = coordinate.x(), dy = coordinate.y(), dz = chart ? 0 : delta.dot(frame.normal);
+                if (chart && chart->clipPlane && chart->clipPlane->dot(V3(dx, dy, 1)) < -1e-9)
+                    return;
                 if (std::abs(dx) > frame.width * .5 || std::abs(dy) > frame.height * .5 ||
                     std::abs(dz) > frame.depth)
                     return;

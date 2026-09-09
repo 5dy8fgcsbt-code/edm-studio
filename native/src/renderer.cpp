@@ -72,10 +72,10 @@ struct SurfaceConformRange {
     uint32_t first = 0, count = 0;
 };
 struct SurfaceConformTriangle {
-    F4 mappingX{}, mappingY{};
+    F4 mappingX{}, mappingY{}, clipPlane{};
     uint32_t triangle = 0, pad0 = 0, pad1 = 0, pad2 = 0;
 };
-static_assert(sizeof(SurfaceConformRange) == 8 && sizeof(SurfaceConformTriangle) == 48);
+static_assert(sizeof(SurfaceConformRange) == 8 && sizeof(SurfaceConformTriangle) == 64);
 static_assert(sizeof(SurfaceDecalData) % 16 == 0);
 constexpr UINT surfaceDepthSize = 2048;
 } // namespace
@@ -546,6 +546,13 @@ void Renderer::updateSurfaceConform() {
                 mapped.mappingY = coefficients;
         }
         mapped.triangle = triangle.index;
+        if (source->clipPlane) {
+            require(source->clipPlane->allFinite(), "Curved decal preview has an invalid contact clip");
+            const auto& clip = *source->clipPlane;
+            require(clip.cwiseAbs().maxCoeff() <= std::numeric_limits<float>::max(),
+                    "Curved decal contact clip exceeds GPU coordinate precision");
+            mapped.clipPlane = {float(clip.x()), float(clip.y()), float(clip.z()), 1};
+        }
         triangles.push_back(mapped);
         ++range.count;
     }

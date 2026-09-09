@@ -11,6 +11,12 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
         auto dimensions = renderer.viewportMetrics();
         return ImVec2(dimensions.at("width").get<float>(), dimensions.at("height").get<float>());
     };
+    auto inputVector = [](const Json& value) {
+        require(value.is_array() && value.size() == 3, "Decal diagnostic point requires three coordinates");
+        V3 result(value.at(0).get<double>(), value.at(1).get<double>(), value.at(2).get<double>());
+        require(result.allFinite(), "Decal diagnostic coordinates must be finite");
+        return result;
+    };
     auto compareImages = [&](const PaintSnapshot& expected) {
         for (const auto& [id, image] : expected) {
             auto found = p.entries.find(p.canvasIndex(id));
@@ -200,6 +206,19 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalBridgeGaps = gapMillimetres > 0;
             p.decalGapMillimetres = gapMillimetres > 0 ? float(gapMillimetres) : 2;
             p.decalSuppressed = true;
+            const auto placementPath = directory / "placement.json";
+            if (fs::is_regular_file(placementPath)) {
+                p.decalDiagnosticPlacementInput = Json::parse(readFile(placementPath, 1000000));
+                const auto& input = p.decalDiagnosticPlacementInput;
+                require(input.is_object() && input.at("points").is_array() && input.at("points").size() == 2,
+                        "A focused decal diagnostic requires two world-space points");
+                renderer.camera.target = inputVector(input.at("target"));
+                const V3 offset = inputVector(input.at("eye")) - renderer.camera.target;
+                renderer.camera.distance = offset.norm();
+                require(renderer.camera.distance > .01, "Decal diagnostic eye coincides with its target");
+                renderer.camera.yaw = std::atan2(offset.x(), offset.z());
+                renderer.camera.pitch = std::asin(std::clamp(offset.y() / renderer.camera.distance, -.999, .999));
+            }
             p.decalDiagnosticCamera = renderer.camera;
             p.decalDiagnosticResult = {{"passed", false},
                                        {"model", pathString(p.scene->source)},
@@ -233,7 +252,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                         continue;
                     visible[p.canvasIndex(hit->material)].push_back(point);
                 }
-            require(visible.size() >= 2,
+            require(visible.size() >= (p.decalDiagnosticPlacementInput.is_object() ? 1 : 2),
                     "Surface decal diagnostic needs two visible opaque textured surfaces");
             std::vector<int> ranked;
             Json coverage = Json::array();
@@ -262,9 +281,27 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                                          [&](auto a, auto b) { return distance(a) < distance(b); });
             };
             p.decalDiagnosticFirstPoint = representative(ranked[0]);
-            p.decalDiagnosticSecondPoint = representative(ranked[1]);
+            p.decalDiagnosticSecondPoint = representative(ranked[std::min(size_t(1), ranked.size() - 1)]);
             p.decalDiagnosticResult["viewport_coverage"] = coverage;
-            p.decalDiagnosticResult["target_canvases"] = {ranked[0], ranked[1]};
+            p.decalDiagnosticResult["target_canvases"] = {ranked[0], ranked[std::min(size_t(1), ranked.size() - 1)]};
+            if (p.decalDiagnosticPlacementInput.is_object()) {
+                const Mat vp = renderer.camera.projection(size.x / size.y) * renderer.camera.view();
+                auto locate = [&](int slot) {
+                    const auto world = inputVector(p.decalDiagnosticPlacementInput.at("points").at(slot));
+                    const V4 clip = vp * V4(world.x(), world.y(), world.z(), 1);
+                    require(clip.w() > 0, "Focused decal point is behind the diagnostic camera");
+                    PaintStrokePoint point{(clip.x() / clip.w() * .5 + .5) * size.x,
+                                           (.5 - clip.y() / clip.w() * .5) * size.y};
+                    const auto hit = Impl::strokeHit(context, point);
+                    require(hit && (hit->position - world).norm() < .05,
+                            "Focused decal point is occluded or does not lie on the visible surface");
+                    p.decalDiagnosticResult["target_canvases"][slot] = p.canvasIndex(hit->material);
+                    return point;
+                };
+                p.decalDiagnosticFirstPoint = locate(0);
+                p.decalDiagnosticSecondPoint = locate(1);
+                p.decalDiagnosticResult["focused_placement"] = p.decalDiagnosticPlacementInput;
+            }
             rejectOutside(size);
             p.decalDiagnosticResult["out_of_bounds_empty_document"] = true;
             renderer.capture(directory / "00-before-preview.png", false);
@@ -278,6 +315,18 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalAspectLocked = true;
             p.decalFront = true;
             p.decalOcclusion = true;
+            if (p.decalDiagnosticPlacementInput.is_object()) {
+                const auto& input = p.decalDiagnosticPlacementInput;
+                p.decalWidth = input.value("width", p.decalWidth);
+                p.decalHeight = input.value("height", p.decalHeight);
+                p.decalAngle = input.value("angle", 0.f);
+                p.decalMaxBend = input.value("max_bend", 65.f);
+                p.decalAspectLocked = !input.contains("height");
+                require(std::isfinite(p.decalWidth) && std::isfinite(p.decalHeight) &&
+                            p.decalWidth > .005 && p.decalHeight > .005 &&
+                            p.decalWidth < 100 && p.decalHeight < 100,
+                        "Invalid focused decal dimensions");
+            }
             require(p.positionDecal(renderer, {0, 0}, size, p.decalDiagnosticFirstPoint),
                     "Surface decal could not position on its first visible surface");
             p.decalDiagnosticPlacement = p.decalOptions();
@@ -306,7 +355,26 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                 {"triangles", patch.triangles.size()}, {"examined_triangles", patch.examinedTriangles},
                 {"stitched_edges", patch.stitchedEdges}, {"blocked_edges", patch.blockedEdges},
                 {"gap_distance", patch.gapDistance}, {"bridged_edges", patch.bridgedEdges},
+                {"contact_edges", patch.contactEdges}, {"maximum_bend", patch.maxBendDegrees},
                 {"conflict_triangles", patch.conflictTriangles}, {"seconds", patch.seconds}};
+            if (p.decalDiagnosticPlacementInput.is_object()) {
+                std::map<uint32_t, size_t> meshCounts;
+                size_t clipped = 0;
+                for (const auto& triangle : patch.triangles) {
+                    ++meshCounts[triangle.triangle.mesh];
+                    clipped += triangle.clipPlane.has_value();
+                }
+                auto& details = p.decalDiagnosticResult["curved_patch"];
+                details["clipped_triangles"] = clipped;
+                details["meshes"] = Json::array();
+                for (auto [mesh, count] : meshCounts)
+                    details["meshes"].push_back({{"mesh", mesh}, {"triangles", count}});
+                if (auto expected = p.decalDiagnosticPlacementInput.find("expected_meshes");
+                    expected != p.decalDiagnosticPlacementInput.end())
+                    for (const auto& id : *expected)
+                        require(meshCounts.contains(id.get<uint32_t>()),
+                                "Focused decal did not reach an expected mesh across the contact or fold");
+            }
             if (gapMillimetres > 0) {
                 p.decalBridgeGaps = false;
                 const auto strict = p.decalOptions();
@@ -472,6 +540,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticResult["second_curved_patch"] = {
                 {"triangles", patch.triangles.size()}, {"normal_sign", patch.normalSign},
                 {"gap_distance", patch.gapDistance}, {"bridged_edges", patch.bridgedEdges},
+                {"contact_edges", patch.contactEdges},
                 {"examined_triangles", patch.examinedTriangles}, {"seconds", patch.seconds}};
             publish("baking_second_surface_decal");
             p.decalDiagnosticStage = 6;
@@ -558,12 +627,24 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
         auto originalLive = PaintImage::load(ImageSource{directory / "comparison-live/original.png"}, 8192);
         auto originalReopened =
             PaintImage::load(ImageSource{directory / "comparison-reopened/original.png"}, 8192);
-        const auto originalDifference = previewPixelDifference(originalLive, originalReopened);
+        // These references were captured before saving/reopening, with no edited bindings.
+        // Reuse their observed edge colors, never colors from the reopened scene under test.
+        auto baseLive = PaintImage::load(ImageSource{directory / "comparison-live/base-reference.png"}, 8192);
+        auto baseRepeat = PaintImage::load(ImageSource{directory / "comparison-live/base-reference-repeat.png"}, 8192);
+        auto baseFinal = PaintImage::load(ImageSource{directory / "comparison-live/base-reference-final.png"}, 8192);
+        std::vector<PaintImage> baseAdditional;
+        for (int index = 0; index < 5; ++index)
+            baseAdditional.push_back(PaintImage::load(ImageSource{directory / "comparison-live" /
+                ("base-reference-extra-" + std::to_string(index) + ".png")}, 8192));
+        const auto originalDifference =
+            previewReferenceDifference(originalReopened, {&originalLive, &baseLive, &baseRepeat, &baseFinal}, baseAdditional);
         require(originalDifference.second <= 16,
                 "Reopened project did not retain the same original livery appearance");
         p.decalDiagnosticResult["original_livery_survives_reopen"] = true;
         p.decalDiagnosticResult["reopened_original_maximum_channel_error"] = originalDifference.first;
         p.decalDiagnosticResult["reopened_original_outlier_pixels"] = originalDifference.second;
+        p.decalDiagnosticResult["reopened_original_raw_outlier_pixels"] =
+            previewPixelDifference(originalLive, originalReopened).second;
         renderer.capture(directory / "03-baked-reopened.png", false);
         renderer.capture(directory / "03-baked-reopened-window.png");
         p.decalDiagnosticResult["final_canvases"] = p.entries.size();

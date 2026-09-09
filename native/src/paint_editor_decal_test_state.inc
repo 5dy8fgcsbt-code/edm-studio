@@ -2,6 +2,7 @@
 // normal hover input whenever decalDiagnosticStage is nonzero.
 int decalDiagnosticStage = 0;
 Json decalDiagnosticResult;
+Json decalDiagnosticPlacementInput;
 PaintSnapshot decalDiagnosticBefore, decalDiagnosticFirst, decalDiagnosticAfter;
 PaintStrokePoint decalDiagnosticFirstPoint, decalDiagnosticSecondPoint;
 Camera decalDiagnosticCamera;

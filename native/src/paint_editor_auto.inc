@@ -468,6 +468,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                             {"examined_triangles", patch.examinedTriangles},
                             {"stitched_edges", patch.stitchedEdges}, {"blocked_edges", patch.blockedEdges},
                             {"gap_distance", patch.gapDistance}, {"bridged_edges", patch.bridgedEdges},
+                            {"contact_edges", patch.contactEdges},
                             {"conflict_triangles", patch.conflictTriangles}, {"seconds", patch.seconds}};
                     }
                 }

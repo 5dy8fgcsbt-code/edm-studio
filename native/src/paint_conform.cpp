@@ -344,6 +344,7 @@ std::vector<GapLink> findGapLinks(const std::vector<Face>& faces,
             ++result.blockedEdges;
     return links;
 }
+#include "paint_conform_contact.inc"
 } // namespace
 
 void validateSurfaceDecalPatch(const PaintSurface& surface, const SurfaceDecalOptions& options) {
@@ -386,8 +387,8 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
     double maxBendDegrees, Progress progress, const std::atomic_bool* cancel) {
     const auto started = Clock::now();
     const auto frame = surfaceDecalFrame(options);
-    require(std::isfinite(maxBendDegrees) && maxBendDegrees > 0 && maxBendDegrees < 90,
-            "Surface conforming decal bend limit must be between zero and 90 degrees");
+    require(std::isfinite(maxBendDegrees) && maxBendDegrees > 0 && maxBendDegrees <= 150,
+            "Surface conforming decal bend limit must be between zero and 150 degrees");
     require(std::isfinite(options.gapDistance) && options.gapDistance >= 0 && options.gapDistance <= .02,
             "Surface decal gap distance must be between zero and 20 millimetres");
     require(std::isfinite(options.limits.seconds) && options.limits.seconds > 0 &&
@@ -580,6 +581,8 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
     }
     std::vector<GapLink> gapLinks;
     std::vector<std::vector<uint32_t>> faceGaps;
+    std::vector<ContactLink> contactLinks;
+    std::vector<std::vector<uint32_t>> faceContacts;
     if (options.gapDistance > 0) {
         if (progress)
             progress("查找曲面贴花可跨越的微小缝隙");
@@ -589,6 +592,15 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
         for (uint32_t k = 0; k < gapLinks.size(); ++k) {
             faceGaps[gapLinks[k].a.face].push_back(k);
             faceGaps[gapLinks[k].b.face].push_back(k);
+        }
+        if (progress)
+            progress("查找贴花表面的边缘接触与轻微穿插");
+        contactLinks = findContactLinks(faces, edges, gapLinks, surface, options, seamTolerance,
+                                         maxBendDegrees, started, cancel, *result);
+        faceContacts.resize(faces.size());
+        for (uint32_t k = 0; k < contactLinks.size(); ++k) {
+            faceContacts[contactLinks[k].a.face].push_back(k);
+            faceContacts[contactLinks[k].b].push_back(k);
         }
     }
     auto& first = faces[size_t(seedIndex)];
@@ -605,7 +617,7 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
         vertex.coordinate = first.patch.coordinates[k];
     }
     first.mapped = true;
-    struct Pending { double distance; uint32_t from; int edge; int gap = -1; };
+    struct Pending { double distance; uint32_t from; int edge; int gap = -1, contact = -1; };
     auto compare = [](const Pending& a, const Pending& b) {
         if (a.distance != b.distance)
             return a.distance > b.distance;
@@ -613,15 +625,19 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
             return a.from > b.from;
         if (a.edge != b.edge)
             return a.edge > b.edge;
-        return a.gap > b.gap;
+        if (a.gap != b.gap)
+            return a.gap > b.gap;
+        return a.contact > b.contact;
     };
     std::priority_queue<Pending, std::vector<Pending>, decltype(compare)> pending(compare);
     auto queue = [&](uint32_t from) {
         const auto& face = faces[from];
-        if (!intersects(face.patch.coordinates, radius * 1.05 + seamTolerance))
+        if (!intersects(face.patch.coordinates, radius * 1.05 + seamTolerance) ||
+            !clippedFaceVisible(face.patch.coordinates, face.patch.clipPlane, seamTolerance))
             return;
         for (int k = 0; k < 3; ++k)
-            if (face.neighbors[k] >= 0 && !faces[size_t(face.neighbors[k])].mapped) {
+            if (face.neighbors[k] >= 0 && !faces[size_t(face.neighbors[k])].mapped &&
+                clippedEdgeVisible(face, k, seamTolerance)) {
                 const V2 a = face.patch.coordinates[k], e = face.patch.coordinates[(k + 1) % 3] - a;
                 const double t = std::clamp(-a.dot(e) / std::max(e.squaredNorm(), 1e-30), 0., 1.);
                 pending.push({(a + t * e).squaredNorm(), from, k});
@@ -631,12 +647,30 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
                 const auto& gap = gapLinks[id];
                 const bool forward = gap.a.face == from;
                 const auto own = forward ? gap.a : gap.b, other = forward ? gap.b : gap.a;
-                if (faces[other.face].mapped)
+                if (faces[other.face].mapped || !clippedEdgeVisible(face, own.edge, seamTolerance))
                     continue;
                 const double t = forward ? gap.aMid : gap.bMid;
                 const V2 point = face.patch.coordinates[own.edge] * (1 - t) +
                                  face.patch.coordinates[(own.edge + 1) % 3] * t;
                 pending.push({point.squaredNorm(), from, own.edge, int(id)});
+            }
+        if (!faceContacts.empty() && !face.patch.clipPlane)
+            for (uint32_t id : faceContacts[from]) {
+                const auto& contact = contactLinks[id];
+                const bool forward = contact.a.face == from;
+                const uint32_t other = forward ? contact.b : contact.a.face;
+                if (faces[other].mapped)
+                    continue;
+                // Queue by the closest point of the finite contact segment in this chart.
+                const auto& world = face.patch.triangle.world;
+                const FaceChartMap mapped(face);
+                auto xy = [&](double t) -> V2 {
+                    const V3 delta = contact.origin + contact.along * t - world[0];
+                    return face.patch.coordinates[0] + mapped(delta);
+                };
+                const V2 a = xy(contact.low), edge = xy(contact.high) - a;
+                const double t = std::clamp(-a.dot(edge) / std::max(1e-30, edge.squaredNorm()), 0., 1.);
+                pending.push({(a + t * edge).squaredNorm(), from, forward ? contact.a.edge : -1, -1, int(id)});
             }
     };
     queue(uint32_t(seedIndex));
@@ -651,15 +685,27 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
         pending.pop();
         const auto& from = faces[next.from];
         const GapLink* gap = next.gap >= 0 ? &gapLinks[size_t(next.gap)] : nullptr;
+        const ContactLink* contact = next.contact >= 0 ? &contactLinks[size_t(next.contact)] : nullptr;
         const bool forward = gap && gap->a.face == next.from;
-        const uint32_t index = gap ? (forward ? gap->b.face : gap->a.face) : uint32_t(from.neighbors[next.edge]);
+        const bool contactForward = contact && contact->a.face == next.from;
+        const uint32_t index = contact ? (contactForward ? contact->b : contact->a.face) :
+                              gap ? (forward ? gap->b.face : gap->a.face) : uint32_t(from.neighbors[next.edge]);
         auto& face = faces[index];
         if (face.mapped)
             continue;
-        auto coordinates = gap ? unfoldGap(from, next.edge, forward ? gap->aMid : gap->bMid, face,
-                                            forward ? gap->b.edge : gap->a.edge,
-                                            forward ? gap->bMid : gap->aMid, gap->distance) :
-                                 unfold(from, next.edge, face, from.neighborEdges[next.edge]);
+        std::optional<V3> clip = from.patch.clipPlane;
+        std::array<V2, 3> coordinates;
+        if (contact) {
+            if (from.patch.clipPlane)
+                continue;
+            auto mapped = unfoldContact(from, face, *contact, contactForward);
+            coordinates = std::move(mapped.first);
+            clip = mapped.second;
+        } else
+            coordinates = gap ? unfoldGap(from, next.edge, forward ? gap->aMid : gap->bMid, face,
+                                             forward ? gap->b.edge : gap->a.edge,
+                                             forward ? gap->bMid : gap->aMid, gap->distance) :
+                                unfold(from, next.edge, face, from.neighborEdges[next.edge]);
         const auto originalCoordinates = coordinates;
         bool conflict = false;
         for (int k = 0; k < 3; ++k) {
@@ -687,13 +733,19 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
             ++result->conflictTriangles;
             continue;
         }
-        if (!intersects(coordinates, radius * 1.05 + seamTolerance))
+        if (!intersects(coordinates, radius * 1.05 + seamTolerance) ||
+            !clippedFaceVisible(coordinates, clip, seamTolerance))
             continue;
         face.patch.coordinates = coordinates;
+        face.patch.clipPlane = clip;
         face.mapped = true;
         if (gap)
             ++result->bridgedEdges;
+        if (contact)
+            ++result->contactEdges;
         for (int k = 0; k < 3; ++k) {
+            if (clip && clipDistance(*clip, coordinates[k]) < -seamTolerance)
+                continue;
             auto& vertex = vertices[face.vertices[k]];
             vertex.mapped = true;
             vertex.coordinate = coordinates[k];

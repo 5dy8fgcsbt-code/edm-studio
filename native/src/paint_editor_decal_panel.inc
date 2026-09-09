@@ -22,7 +22,7 @@ if (ImGui::IsItemHovered())
 if (p.decalConforming) {
     placementChanged |= ImGui::Checkbox("跨越微小缝隙", &p.decalBridgeGaps);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("关闭：沿连续模型表面贴合。\n开启：跨过限定宽度的小缝，沿另一侧表面继续贴图。\n保留缝隙的实际宽度；不会补模型，也不会跨到其他外挂实例。");
+        ImGui::SetTooltip("关闭：沿连续模型表面贴合。\n开启：跨过限定宽度的小缝或边缘轻微穿插，沿外露表面继续贴图。\n机背直角等位置还需开启沿锐边延伸。不会补模型或跨到其他外挂实例。");
     if (p.decalBridgeGaps) {
         ImGui::SameLine();
         ImGui::SetNextItemWidth(-1);
@@ -32,7 +32,13 @@ if (p.decalConforming) {
             ImGui::SetTooltip("允许跨越的最大缝宽：0.1–20 mm，默认2 mm。\n沿边拖动或Ctrl+单击输入。大裂口、明显台阶或不确定连接仍会停止。");
     }
 }
-gap();
+bool sharpEdges = p.decalMaxBend > 85;
+if (p.decalConforming && ImGui::Checkbox("沿锐边延伸", &sharpEdges)) {
+    p.decalMaxBend = sharpEdges ? 135.f : 65.f;
+    placementChanged = true;
+}
+if (p.decalConforming && ImGui::IsItemHovered())
+    ImGui::SetTooltip("开启后允许沿135°以内的折角继续贴合，例如机背直角与机翼外唇。\n关闭恢复65°；可在下方展开详细设置微调。朝向和遮挡检查仍然有效。");
 imagePreview();
 paintQuality();
 if (ImGui::CollapsingHeader("落点清晰度"))
@@ -62,8 +68,8 @@ paintHint("[ / ] 调整大小，Q / E 旋转；右键旋转模型，滚轮缩放
 if (ImGui::CollapsingHeader("贴合范围与遮挡")) {
     if (p.decalConforming) {
         ImGui::SetNextItemWidth(-1);
-        placementChanged |= ImGui::SliderFloat("##decal-max-bend", &p.decalMaxBend, 10, 85,
-                                               "允许相邻面折角 %.0f°");
+        placementChanged |= ImGui::SliderFloat("##decal-max-bend", &p.decalMaxBend, 10, 150,
+                                               "允许相邻面折角 %.0f°", ImGuiSliderFlags_AlwaysClamp);
         paintHint("遇到更陡的折角停止延伸；数值较小可避免越过尖锐边缘。");
     } else {
         ImGui::SetNextItemWidth(-1);
