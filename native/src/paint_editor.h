@@ -16,6 +16,9 @@ class PaintEditor {
     void reset(Renderer& renderer);
     // Append-only scene replacement keeps canvas indices, undo history and pending artwork intact.
     void extendScene(Renderer& renderer);
+    // Compact remaining canvases/aliases and history after unloading attached objects.
+    void compactScene(Renderer& renderer, std::shared_ptr<const Scene> scene,
+                      const std::vector<int>& materialMap);
     void invalidateSurface(Renderer& renderer);
     void quiesce();
     void tick(Renderer& renderer, const Args& args);

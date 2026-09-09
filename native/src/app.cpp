@@ -169,6 +169,18 @@ class App {
     bool cameraMoving = false;
     bool attaching = false;
     int hoveredConnector = -1;
+    int selectedConnector = -1;
+    ImVec2 connectorPopupPosition{}, unloadButtonPosition{};
+    bool connectorPopupVisible = false;
+    std::shared_ptr<const Scene> connectorSelectionScene;
+    std::string detachmentTest;
+    int detachmentTestStage = 0;
+    PaintSnapshot detachmentPaintBefore;
+    std::shared_ptr<const Scene> detachmentSceneBefore;
+    Args detachmentArgsBefore;
+    Json detachmentTestReport, lastDetachment;
+    std::optional<ImVec2> diagnosticMousePosition;
+    std::optional<bool> diagnosticMouseDown;
     std::vector<std::pair<std::string, fs::path>> initialAttachments;
     Json connectorMarkers = Json::array();
     std::optional<std::pair<std::string, fs::path>> attachmentTest;
@@ -341,6 +353,8 @@ class App {
         cancelKind("attachment");
         attaching = false;
         hoveredConnector = -1;
+        selectedConnector = -1;
+        connectorSelectionScene.reset();
         cancelKind("catalog");
         cancelKind("textures");
         cancelKind("livery");
@@ -473,9 +487,11 @@ class App {
                     record(warning);
             });
     }
+#include "detachment_app.inc"
     bool connectorOverlay(ImVec2 origin, ImVec2 size, bool hovered) {
         hoveredConnector = -1;
         connectorMarkers = Json::array();
+        connectorPopupVisible = false;
         if (!renderer.model || !renderer.options.connectors || size.x <= 0 || size.y <= 0)
             return false;
         const auto& scene = *renderer.model->scene;
@@ -507,9 +523,10 @@ class App {
             bool occupied = std::any_of(scene.attachments.begin(), scene.attachments.end(),
                                         [i](const auto& item) { return item.targetNode == i; });
             markers.push_back({i, screen, mount, occupied});
-            connectorMarkers.push_back({{"node", i}, {"name", node.name}, {"x", screen.x}, {"y", screen.y}});
+            connectorMarkers.push_back(
+                {{"node", i}, {"name", node.name}, {"x", screen.x}, {"y", screen.y}, {"occupied", occupied}});
             float dx = ImGui::GetIO().MousePos.x - screen.x, dy = ImGui::GetIO().MousePos.y - screen.y;
-            float distance = dx * dx + dy * dy + (mount ? 0 : .01f);
+            float distance = dx * dx + dy * dy + (occupied ? 0 : mount ? .01f : .02f);
             if (hovered && distance < nearest) {
                 nearest = distance;
                 hoveredConnector = i;
@@ -530,20 +547,65 @@ class App {
             draw->AddCircleFilled(marker.position, 1.7f, color);
         }
         draw->PopClipRect();
+        bool captured = ImGui::IsPopupOpen("连接点操作");
         if (hoveredConnector >= 0) {
+            bool occupied = std::any_of(scene.attachments.begin(), scene.attachments.end(),
+                                        [&](const auto& a) { return a.targetNode == hoveredConnector; });
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             ImGui::BeginTooltip();
             ImGui::TextUnformatted(scene.nodes[hoveredConnector].name.c_str());
-            ImGui::TextDisabled("点击加载 EDM · 自动对齐 AttachPoint");
+            ImGui::TextDisabled(occupied ? "点击显示卸载按钮" : "点击加载 EDM · 自动对齐 AttachPoint");
             ImGui::EndTooltip();
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !attaching && !loading && !paint.busy()) {
                 int target = hoveredConnector;
-                if (auto path = dialog(hwnd, false, false, L"选择要连接到挂点的 EDM"))
+                if (occupied) {
+                    selectedConnector = target;
+                    connectorSelectionScene = renderer.model->scene;
+                    const auto marker = std::find_if(markers.begin(), markers.end(),
+                                                     [target](const auto& m) { return m.node == target; });
+                    connectorPopupPosition = {marker->position.x + 14, marker->position.y + 8};
+                    ImGui::OpenPopup("连接点操作");
+                } else if (auto path = dialog(hwnd, false, false, L"选择要连接到挂点的 EDM"))
                     attachModel(target, *path);
             }
-            return true;
+            captured = true;
         }
-        return false;
+        ImGui::SetNextWindowPos(connectorPopupPosition, ImGuiCond_Appearing);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {14, 12});
+        if (ImGui::BeginPopup("连接点操作")) {
+            captured = connectorPopupVisible = true;
+            bool valid = connectorSelectionScene == renderer.model->scene && selectedConnector >= 0 &&
+                         selectedConnector < int(scene.nodes.size()) &&
+                         (renderer.options.attachments ||
+                          !scene.nodes[selectedConnector].extras.contains("edm_attachment"));
+            if (!valid) {
+                ImGui::CloseCurrentPopup();
+            } else {
+                ImGui::TextUnformatted(scene.nodes[selectedConnector].name.c_str());
+                ImGui::TextDisabled("卸载此处外挂及其下级物体");
+                ImGui::Spacing();
+                ImGui::BeginDisabled(attaching || loading || paint.busy());
+                ImGui::PushStyleColor(ImGuiCol_Button, {.44f, .25f, .10f, 1});
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {.62f, .35f, .12f, 1});
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, {.72f, .41f, .14f, 1});
+                bool unload = ImGui::Button("卸载", {172, 32});
+                auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
+                unloadButtonPosition = {(min.x + max.x) * .5f, (min.y + max.y) * .5f};
+                ImGui::PopStyleColor(3);
+                ImGui::EndDisabled();
+                if (unload) {
+                    detachModel(selectedConnector);
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar();
+        if (!ImGui::IsPopupOpen("连接点操作")) {
+            selectedConnector = -1;
+            connectorSelectionScene.reset();
+        }
+        return captured;
     }
     void startTextures(bool reuseExisting = false) {
         textureReadyTime = 0;
@@ -1476,7 +1538,7 @@ class App {
                           compactNumber(renderer.visibleTriangles).c_str(),
                           renderer.model->scene->meshes.size());
             overlay->AddText({origin.x + 16, origin.y + 14}, IM_COL32(151, 178, 211, 230), stats);
-            std::string help = renderer.options.connectors ? "点击挂点加载 EDM · Pylon / Point 支持逐级挂接"
+            std::string help = renderer.options.connectors ? "点击空挂点加载 EDM · 点击黄色挂点显示卸载按钮"
                                : paint.active() && renderer.options.editedLivery
                                    ? "按位置自动绘制 · 右键旋转 · 中键平移"
                                    : "左 / 右键旋转  ·  中键平移  ·  滚轮缩放";
@@ -1656,6 +1718,7 @@ class App {
         }
     }
 #include "attachment_app_test.inc"
+#include "detachment_app_test.inc"
     bool diagnostics(double frameSeconds) {
         if (!smoke)
             return false;
@@ -1686,6 +1749,8 @@ class App {
         if (!paintMaterial.empty() && !paint.exercise(renderer, paintMaterial, paintResult))
             return false;
         if (attachmentTest && !exerciseAttachmentInteraction())
+            return false;
+        if (!detachmentTest.empty() && !exerciseDetachmentInteraction())
             return false;
         if (!decalTestDirectory.empty() &&
             !paint.exerciseDecal(renderer, decalTestImage, decalTestDirectory, decalTestDimension))
@@ -1732,6 +1797,7 @@ class App {
         std::sort(samples.begin(), samples.end());
         auto stats = renderer.model->scene->summary();
         stats["attachment_interaction"] = attachmentTestReport;
+        stats["detachment_interaction"] = detachmentTestReport;
         stats["connector_markers"] = connectorMarkers;
         stats.update(
             {{"model_ready_seconds", loadSeconds},
@@ -1859,7 +1925,11 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
             app.smoke = true;
         } else if (key == L"--show-connectors")
             app.renderer.options.connectors = true;
-        else if (key == L"--hide-attachments")
+        else if (key == L"--detachment-test") {
+            app.detachmentTest = utf8(value());
+            app.smoke = true;
+            app.renderer.options.connectors = true;
+        } else if (key == L"--hide-attachments")
             app.renderer.options.attachments = false;
         else if (key == L"--capture")
             app.capturePath = value();
@@ -2050,6 +2120,14 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
             app.renderer.beginFrame();
             ImGui_ImplDX11_NewFrame();
             ImGui_ImplWin32_NewFrame();
+            if (app.smoke && app.diagnosticMousePosition) {
+                ImGui::GetIO().AddMousePosEvent(app.diagnosticMousePosition->x,
+                                                app.diagnosticMousePosition->y);
+                if (app.diagnosticMouseDown) {
+                    ImGui::GetIO().AddMouseButtonEvent(0, *app.diagnosticMouseDown);
+                    app.diagnosticMouseDown.reset();
+                }
+            }
             ImGui::NewFrame();
             app.ui();
             ImGui::Render();

@@ -876,6 +876,63 @@ void PaintEditor::quiesce() {
         if (entry.canvas->strokeActive())
             entry.canvas->endStroke();
 }
+void PaintEditor::compactScene(Renderer& renderer, std::shared_ptr<const Scene> scene,
+                               const std::vector<int>& materialMap) {
+    require(scene && impl->scene && !busy(), "请等待当前绘制任务完成");
+    auto& p = *impl;
+    require(materialMap.size() == p.scene->materials.size(), "无效的卸载材质映射");
+    p.ensureAliases();
+    std::vector<int> aliases(scene->materials.size(), -1);
+    std::map<int, int> canonical;
+    for (int old = 0; old < int(materialMap.size()); ++old) {
+        const int next = materialMap[old];
+        require(next >= -1 && next < int(aliases.size()), "无效的卸载材质索引");
+        if (next < 0)
+            continue;
+        require(aliases[next] == -1, "重复的卸载材质索引");
+        int key = p.canvasIndex(old);
+        int preferred = materialMap.at(key);
+        aliases[next] = canonical.try_emplace(key, preferred < 0 ? next : preferred).first->second;
+    }
+    require(std::find(aliases.begin(), aliases.end(), -1) == aliases.end(), "不完整的卸载材质映射");
+    std::map<int, Impl::Entry> entries;
+    for (auto [old, next] : canonical)
+        if (auto it = p.entries.find(old); it != p.entries.end()) {
+            entries.emplace(next, it->second);
+            entries.at(next).uv.reset();
+        }
+    std::vector<std::shared_ptr<PaintCanvas>> retained(aliases.size());
+    std::map<int, std::shared_ptr<GpuTexture>> overrides;
+    for (int i = 0; i < int(aliases.size()); ++i)
+        if (auto it = entries.find(aliases[i]); it != entries.end()) {
+            retained[i] = it->second.canvas;
+            overrides[i] = it->second.gpu.view;
+        }
+    auto remap = [&](int index) {
+        return index >= 0 && index < int(materialMap.size()) ? materialMap[index] : -1;
+    };
+    std::string status = "外挂已卸载 · 保留物体的绘制内容与撤销记录已保留";
+    p.history.remapMaterials(materialMap, retained);
+    p.material = remap(p.material);
+    p.pendingTemplateTarget = remap(p.pendingTemplateTarget);
+    p.wrapMaterial = remap(p.wrapMaterial);
+    p.wrapAligned = false;
+    p.entries.swap(entries);
+    p.canonicalIds.swap(aliases);
+    p.scene = std::move(scene);
+    p.saved = p.entries.empty();
+    renderer.diffuseOverrides.swap(overrides);
+    // Publication after history remapping must not allocate: App still owns the old GPU model
+    // until this method returns. Invalidate the idle surface without another throwing check.
+    ++p.generation;
+    p.surface.reset();
+    p.surfacePending = false;
+    p.decalHit.reset();
+    p.projectionDragging = false;
+    p.attachmentsVisible = renderer.options.attachments;
+    renderer.decalPreview = {};
+    p.status.swap(status);
+}
 void PaintEditor::tick(Renderer& renderer, const Args& args) {
     auto& p = *impl;
     p.poll();

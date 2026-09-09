@@ -31,6 +31,14 @@ class PaintBatchHistory {
     std::vector<int> activeMaterials() const;
     // Materials changed by the last successful commit/undo/redo; empty after begin/cancel/clear.
     const std::vector<int>& changedMaterials() const noexcept;
+    // Remaps history after removing scene materials; mapping is old index -> new index or -1.
+    // retainedCanvases has one entry per NEW scene material, including nullptr for unedited slots.
+    // Every surviving alias of a shared canvas must carry the same pointer. All such aliases receive
+    // changed notifications even if the originally touched/canonical material was removed.
+    // Requires an inactive batch. Invalid indices or allocation failure leave all history unchanged;
+    // retained canvas tokens, pixels and their independent undo/redo chains are never modified.
+    void remapMaterials(const std::vector<int>& mapping,
+                        const std::vector<std::shared_ptr<PaintCanvas>>& retainedCanvases);
     // Clears only the batch coordinator's history, leaving independent canvas history intact.
     void clear() noexcept;
 };

@@ -1,4 +1,5 @@
 #include "paint_batch.h"
+#include <climits>
 
 namespace edm {
 struct PaintBatchHistory::Impl {
@@ -172,6 +173,73 @@ std::vector<int> PaintBatchHistory::activeMaterials() const {
 const std::vector<int>& PaintBatchHistory::changedMaterials() const noexcept {
     static const std::vector<int> empty;
     return impl->lastChanged ? impl->lastChanged->materials : empty;
+}
+void PaintBatchHistory::remapMaterials(const std::vector<int>& mapping,
+                                       const std::vector<std::shared_ptr<PaintCanvas>>& retainedCanvases) {
+    require(!impl->active, "Cannot remap material history during an active paint operation");
+    require(retainedCanvases.size() <= size_t(INT_MAX), "Remapped paint material count exceeds index range");
+    for (int material : mapping)
+        require(material >= -1 && (material < 0 || size_t(material) < retainedCanvases.size()),
+                "Remapped paint material index is out of range");
+    std::unordered_map<const PaintCanvas*, std::vector<int>> aliases;
+    for (size_t material = 0; material < retainedCanvases.size(); ++material)
+        if (retainedCanvases[material])
+            aliases[retainedCanvases[material].get()].push_back(int(material));
+
+    // Undo/redo and lastChanged may share a Group. Clone each old object once, without mutating
+    // either its indices or any canvas state until every allocation and validation has succeeded.
+    std::unordered_map<const Impl::Group*, std::shared_ptr<Impl::Group>> replacements;
+    auto remapGroup = [&](const std::shared_ptr<Impl::Group>& group) -> std::shared_ptr<Impl::Group> {
+        if (!group)
+            return {};
+        if (auto existing = replacements.find(group.get()); existing != replacements.end())
+            return existing->second;
+        for (int material : group->materials)
+            require(material >= 0 && size_t(material) < mapping.size(),
+                    "Material history refers to an index outside the supplied remapping");
+        auto replacement = std::make_shared<Impl::Group>();
+        replacement->members.reserve(group->members.size());
+        for (const auto& member : group->members)
+            if (aliases.contains(member.canvas.get()))
+                replacement->members.push_back(member);
+        for (int oldMaterial : group->materials) {
+            const int material = mapping[oldMaterial];
+            if (material >= 0 && retainedCanvases[material] &&
+                std::any_of(
+                    replacement->members.begin(), replacement->members.end(),
+                    [&](const Impl::Member& member) { return member.canvas == retainedCanvases[material]; }))
+                replacement->materials.push_back(material);
+        }
+        // A shared canvas may have been touched only through a now-removed canonical material.
+        // Its surviving aliases still require GPU updates when this operation is undone or redone.
+        for (const auto& member : replacement->members) {
+            const auto& indices = aliases.at(member.canvas.get());
+            replacement->materials.insert(replacement->materials.end(), indices.begin(), indices.end());
+        }
+        std::sort(replacement->materials.begin(), replacement->materials.end());
+        replacement->materials.erase(
+            std::unique(replacement->materials.begin(), replacement->materials.end()),
+            replacement->materials.end());
+        if (replacement->members.empty())
+            replacement.reset();
+        replacements.emplace(group.get(), replacement);
+        return replacement;
+    };
+    auto remapStack = [&](const std::vector<std::shared_ptr<Impl::Group>>& stack) {
+        std::vector<std::shared_ptr<Impl::Group>> result;
+        result.reserve(stack.size());
+        for (const auto& group : stack)
+            if (auto replacement = remapGroup(group))
+                result.push_back(std::move(replacement));
+        return result;
+    };
+    auto undo = remapStack(impl->undo);
+    auto redo = remapStack(impl->redo);
+    auto changed = remapGroup(impl->lastChanged);
+    // Publication only swaps owners. Token chains and old group contents remain untouched.
+    impl->undo.swap(undo);
+    impl->redo.swap(redo);
+    impl->lastChanged.swap(changed);
 }
 void PaintBatchHistory::clear() noexcept {
     cancel();

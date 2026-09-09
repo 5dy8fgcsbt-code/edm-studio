@@ -133,7 +133,7 @@ std::shared_ptr<Scene> restorePaintAssembly(std::shared_ptr<Scene> baseScene, co
             if (defaults.contains(merged))
                 childDefaults[original] = defaults.at(merged);
         cancelled(cancel);
-        result = attachScene(*result, *child, target, childDefaults);
+        result = attachScene(*result, *child, target, childDefaults, argumentMaps[index]);
         const auto actual = comparable(paintAssemblyMetadata(*result), fs::current_path());
         require(actual["attachments"].size() == index + 1 &&
                     actual["attachments"][index] == expectedComparable["attachments"][index],

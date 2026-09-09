@@ -146,6 +146,9 @@ struct SceneAttachment {
     int targetNode = -1, root = -1, attachNode = -1;
     int nodeBegin = 0, nodeCount = 0, materialBegin = 0, materialCount = 0, meshBegin = 0, meshCount = 0;
     std::map<int, int> argumentMap;
+    // Runtime bookkeeping only: not part of the persistent paint assembly identity.
+    int renderBegin = 0, renderCount = 0, sourceCollisions = 0;
+    Json sourceRenderTypes = Json::object();
 };
 struct Scene {
     fs::path source;

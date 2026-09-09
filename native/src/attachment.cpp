@@ -158,7 +158,8 @@ int findConnector(const Scene& scene, std::string_view name) {
     return result;
 }
 std::shared_ptr<Scene> attachScene(const Scene& base, const Scene& child, int targetConnector,
-                                   const Args& childDefaults) {
+                                   const Args& childDefaults,
+                                   std::optional<std::map<int, int>> forcedArgumentMap) {
     validateScene(base);
     validateScene(child);
     require(targetConnector >= 0 && targetConnector < int(base.nodes.size()) &&
@@ -198,15 +199,24 @@ std::shared_ptr<Scene> attachScene(const Scene& base, const Scene& child, int ta
     }
     std::map<int, int> mapping;
     int64_t next = reserved.empty() ? 0 : int64_t(*reserved.rbegin()) + 1;
-    for (int original : childArguments) {
-        if (next > std::numeric_limits<int>::max())
-            next = 0;
-        while (next <= std::numeric_limits<int>::max() && reserved.contains(int(next)))
-            ++next;
-        require(next <= std::numeric_limits<int>::max(), "Attachment argument index space exhausted");
-        mapping[original] = int(next);
-        reserved.insert(int(next++));
-    }
+    if (forcedArgumentMap) {
+        require(forcedArgumentMap->size() == childArguments.size(),
+                "Saved attachment argument map is incomplete");
+        for (auto [original, assigned] : *forcedArgumentMap) {
+            require(childArguments.contains(original) && assigned >= 0 && reserved.insert(assigned).second,
+                    "Saved attachment argument map is invalid or conflicts with another object");
+            mapping[original] = assigned;
+        }
+    } else
+        for (int original : childArguments) {
+            if (next > std::numeric_limits<int>::max())
+                next = 0;
+            while (next <= std::numeric_limits<int>::max() && reserved.contains(int(next)))
+                ++next;
+            require(next <= std::numeric_limits<int>::max(), "Attachment argument index space exhausted");
+            mapping[original] = int(next);
+            reserved.insert(int(next++));
+        }
     for (auto [argument, value] : defaults)
         result->defaultArgs[mapping.at(argument)] = value;
     int renderOffset = 0;
@@ -309,6 +319,25 @@ std::shared_ptr<Scene> attachScene(const Scene& base, const Scene& child, int ta
     attached.meshBegin = meshOffset;
     attached.meshCount = int(child.meshes.size());
     attached.argumentMap = mapping;
+    attached.renderBegin = renderOffset;
+    for (const auto& mesh : child.meshes)
+        if (mesh.extras.is_object())
+            attached.renderCount =
+                std::max(attached.renderCount, mesh.extras.value("edm_render_index", -1) + 1);
+    attached.sourceCollisions = child.collisionCount;
+    attached.sourceRenderTypes = child.renderTypes.is_object() ? child.renderTypes : Json::object();
+    for (const auto& nested : child.attachments) {
+        attached.sourceCollisions -= nested.sourceCollisions;
+        for (auto it = nested.sourceRenderTypes.begin(); it != nested.sourceRenderTypes.end(); ++it) {
+            int remaining = attached.sourceRenderTypes.value(it.key(), 0) - it.value().get<int>();
+            require(remaining >= 0, "Invalid nested render statistics");
+            if (remaining)
+                attached.sourceRenderTypes[it.key()] = remaining;
+            else
+                attached.sourceRenderTypes.erase(it.key());
+        }
+    }
+    require(attached.sourceCollisions >= 0, "Invalid nested collision statistics");
     result->attachments.push_back(std::move(attached));
     for (auto nested : child.attachments) {
         nested.targetNode += nodeOffset;
@@ -318,6 +347,7 @@ std::shared_ptr<Scene> attachScene(const Scene& base, const Scene& child, int ta
         nested.nodeBegin += nodeOffset;
         nested.materialBegin += materialOffset;
         nested.meshBegin += meshOffset;
+        nested.renderBegin += renderOffset;
         for (auto& [original, remapped] : nested.argumentMap)
             remapped = mapping.at(remapped);
         result->attachments.push_back(std::move(nested));
@@ -335,6 +365,200 @@ std::shared_ptr<Scene> attachScene(const Scene& base, const Scene& child, int ta
     if (attachPoint < 0)
         result->warn(pathString(child.source.filename()) + " 没有 AttachPoint，使用模型原点连接。");
     rebuild(*result);
+    return result;
+}
+DetachResult detachScene(const Scene& source, int targetConnector) {
+    validateScene(source);
+    require(targetConnector >= 0 && targetConnector < int(source.nodes.size()) &&
+                isConnector(source.nodes[targetConnector]),
+            "Detachment target must be a Connector node");
+    DetachResult result;
+    std::vector<bool> removedNodes(source.nodes.size()), removedAttachments(source.attachments.size());
+    for (const auto& attachment : source.attachments) {
+        require(attachment.root >= 0 && attachment.root < int(source.nodes.size()),
+                "Invalid attachment root");
+        if (attachment.targetNode == targetConnector)
+            removedNodes[attachment.root] = true;
+    }
+    for (int index : source.order)
+        if (source.nodes[index].parent >= 0 && removedNodes[source.nodes[index].parent])
+            removedNodes[index] = true;
+    for (size_t index = 0; index < source.attachments.size(); ++index) {
+        removedAttachments[index] = removedNodes[source.attachments[index].root];
+        if (removedAttachments[index]) {
+            ++result.removedCount;
+            for (auto [original, remapped] : source.attachments[index].argumentMap)
+                result.removedArguments.insert(remapped);
+        }
+    }
+    auto ownerRemoved = [&](const Json& metadata) {
+        if (!metadata.is_object() || !metadata.contains("edm_attachment"))
+            return false;
+        const int owner = metadata.at("edm_attachment").get<int>();
+        require(owner >= 0 && owner < int(removedAttachments.size()), "Invalid attachment owner");
+        return bool(removedAttachments[owner]);
+    };
+    auto indexMap = [](size_t count, auto removed) {
+        std::vector<int> mapping(count, -1);
+        int next = 0;
+        for (size_t index = 0; index < count; ++index)
+            if (!removed(index))
+                mapping[index] = next++;
+        return mapping;
+    };
+    result.nodeMap = indexMap(source.nodes.size(), [&](size_t index) { return removedNodes[index]; });
+    result.attachmentMap =
+        indexMap(source.attachments.size(), [&](size_t index) { return removedAttachments[index]; });
+    result.materialMap = indexMap(source.materials.size(),
+                                  [&](size_t index) { return ownerRemoved(source.materials[index].extras); });
+    result.meshMap = indexMap(source.meshes.size(), [&](size_t index) {
+        const auto& mesh = source.meshes[index];
+        return removedNodes[mesh.node] || ownerRemoved(mesh.extras);
+    });
+    require(source.heads.size() == source.tails.size(), "Invalid source node lookup");
+    const auto rawNodes =
+        indexMap(source.heads.size(), [&](size_t index) { return removedNodes.at(source.heads[index]); });
+    int renderSize = 0;
+    for (const auto& mesh : source.meshes)
+        if (mesh.extras.is_object())
+            renderSize = std::max(renderSize, mesh.extras.value("edm_render_index", -1) + 1);
+    std::vector<bool> removedRenders(renderSize);
+    for (size_t index = 0; index < source.attachments.size(); ++index)
+        if (removedAttachments[index]) {
+            const auto& attachment = source.attachments[index];
+            require(attachment.renderBegin >= 0 && attachment.renderCount >= 0 &&
+                        int64_t(attachment.renderBegin) + attachment.renderCount <= renderSize,
+                    "Invalid attachment source render range");
+            for (int render = attachment.renderBegin;
+                 render < attachment.renderBegin + attachment.renderCount; ++render)
+                removedRenders[render] = true;
+        }
+    const auto renderMap =
+        indexMap(removedRenders.size(), [&](size_t index) { return removedRenders[index]; });
+    auto mapped = [](const std::vector<int>& mapping, int oldIndex, bool negative = false) {
+        if (negative && oldIndex < 0)
+            return oldIndex;
+        require(oldIndex >= 0 && oldIndex < int(mapping.size()) && mapping[oldIndex] >= 0,
+                "Surviving object references a removed attachment");
+        return mapping[oldIndex];
+    };
+    std::function<void(Json&)> metadata = [&](Json& value) {
+        if (value.is_object()) {
+            for (auto it = value.begin(); it != value.end(); ++it) {
+                if (it.key() == "edm_attachment")
+                    it.value() = mapped(result.attachmentMap, it.value().get<int>());
+                else if ((it.key() == "edm_node" || it.key() == "edm_parent") &&
+                         it.value().is_number_integer())
+                    it.value() = mapped(rawNodes, it.value().get<int>(), true);
+                else if (it.key() == "edm_render_index" && it.value().is_number_integer())
+                    it.value() = mapped(renderMap, it.value().get<int>(), true);
+                else
+                    metadata(it.value());
+            }
+        } else if (value.is_array())
+            for (auto& child : value)
+                metadata(child);
+    };
+    // Do not duplicate large meshes that are about to be removed. Only surviving
+    // geometry is copied, while the currently displayed scene remains immutable.
+    auto scene = std::make_shared<Scene>();
+    scene->source = source.source;
+    scene->version = source.version;
+    scene->collisionCount = source.collisionCount;
+    scene->renderTypes = source.renderTypes;
+    scene->limits = source.limits;
+    scene->defaultArgs = source.defaultArgs;
+    scene->numberArgs = source.numberArgs;
+    scene->warnings = source.warnings;
+    scene->parseSeconds = source.parseSeconds;
+    scene->buildSeconds = source.buildSeconds;
+    for (size_t index = 0; index < source.nodes.size(); ++index)
+        if (result.nodeMap[index] >= 0) {
+            auto node = source.nodes[index];
+            node.parent = mapped(result.nodeMap, node.parent, true);
+            metadata(node.extras);
+            scene->nodes.push_back(std::move(node));
+        }
+    for (size_t index = 0; index < source.materials.size(); ++index)
+        if (result.materialMap[index] >= 0) {
+            auto material = source.materials[index];
+            metadata(material.extras);
+            metadata(material.uniforms);
+            metadata(material.animatedUniforms);
+            scene->materials.push_back(std::move(material));
+        }
+    for (size_t index = 0; index < source.meshes.size(); ++index)
+        if (result.meshMap[index] >= 0) {
+            auto mesh = source.meshes[index];
+            mesh.node = mapped(result.nodeMap, mesh.node);
+            mesh.material = mapped(result.materialMap, mesh.material);
+            for (auto& joint : mesh.skinNodes)
+                joint = mapped(result.nodeMap, joint);
+            metadata(mesh.extras);
+            scene->meshes.push_back(std::move(mesh));
+        }
+    for (auto track : source.tracks)
+        if (result.nodeMap[track.node] >= 0) {
+            track.node = result.nodeMap[track.node];
+            require(!result.removedArguments.contains(track.arg),
+                    "A surviving track uses a removed argument");
+            scene->tracks.push_back(std::move(track));
+        }
+    for (size_t index = 0; index < source.heads.size(); ++index)
+        if (rawNodes[index] >= 0) {
+            scene->heads.push_back(mapped(result.nodeMap, source.heads[index]));
+            scene->tails.push_back(mapped(result.nodeMap, source.tails[index]));
+        }
+    auto range = [](const std::vector<int>& mapping, int begin, int count) {
+        require(begin >= 0 && count >= 0 && int64_t(begin) + count <= int64_t(mapping.size()),
+                "Invalid attachment range");
+        const int newBegin = int(
+            std::count_if(mapping.begin(), mapping.begin() + begin, [](int value) { return value >= 0; }));
+        const int newCount = int(std::count_if(mapping.begin() + begin, mapping.begin() + begin + count,
+                                               [](int value) { return value >= 0; }));
+        return std::pair<int, int>{newBegin, newCount};
+    };
+    for (size_t index = 0; index < source.attachments.size(); ++index) {
+        const auto& original = source.attachments[index];
+        if (removedAttachments[index]) {
+            scene->collisionCount -= original.sourceCollisions;
+            for (auto it = original.sourceRenderTypes.begin(); it != original.sourceRenderTypes.end(); ++it) {
+                int remaining = scene->renderTypes.value(it.key(), 0) - it.value().get<int>();
+                require(remaining >= 0, "Invalid remaining render statistics");
+                if (remaining)
+                    scene->renderTypes[it.key()] = remaining;
+                else
+                    scene->renderTypes.erase(it.key());
+            }
+            continue;
+        }
+        auto attachment = original;
+        attachment.targetNode = mapped(result.nodeMap, attachment.targetNode);
+        attachment.root = mapped(result.nodeMap, attachment.root);
+        attachment.attachNode = mapped(result.nodeMap, attachment.attachNode, true);
+        std::tie(attachment.nodeBegin, attachment.nodeCount) =
+            range(result.nodeMap, attachment.nodeBegin, attachment.nodeCount);
+        std::tie(attachment.materialBegin, attachment.materialCount) =
+            range(result.materialMap, attachment.materialBegin, attachment.materialCount);
+        std::tie(attachment.meshBegin, attachment.meshCount) =
+            range(result.meshMap, attachment.meshBegin, attachment.meshCount);
+        std::tie(attachment.renderBegin, attachment.renderCount) =
+            range(renderMap, attachment.renderBegin, attachment.renderCount);
+        std::erase_if(attachment.argumentMap,
+                      [&](const auto& value) { return result.removedArguments.contains(value.second); });
+        scene->attachments.push_back(std::move(attachment));
+    }
+    for (int argument : result.removedArguments) {
+        scene->limits.erase(argument);
+        scene->defaultArgs.erase(argument);
+    }
+    std::erase_if(scene->numberArgs,
+                  [&](int argument) { return result.removedArguments.contains(argument); });
+    scene->sourceNodes = int(scene->heads.size());
+    scene->connectorCount = int(std::count_if(scene->nodes.begin(), scene->nodes.end(), isConnector));
+    require(scene->collisionCount >= 0, "Invalid remaining collision statistics");
+    rebuild(*scene);
+    result.scene = std::move(scene);
     return result;
 }
 } // namespace edm

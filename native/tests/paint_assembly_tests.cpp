@@ -136,8 +136,8 @@ void tests(const fs::path& root) {
     tampered = saved;
     tampered["assembly"]["attachments"][0]["argument_map"]["0"] = 999;
     writeJson(invalid, tampered);
-    fails([&] { restorePaintAssembly(fresh, invalid); },
-          "Changed argument remapping is rejected before the scene is published");
+    fails([&] { loadPaintDocument(*restorePaintAssembly(fresh, invalid), invalid); },
+          "Changed argument remapping fails the full project fingerprint before publication");
     tampered = saved;
     tampered["assembly"]["default_args"]["0"] = "invalid";
     writeJson(invalid, tampered);
