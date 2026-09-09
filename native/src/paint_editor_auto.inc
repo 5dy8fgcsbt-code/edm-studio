@@ -59,7 +59,8 @@ canvasLoader(const std::vector<int>& materials) {
                 image = PaintImage::load(*texture, dimension);
                 name = texture->key();
             } else {
-                image = PaintImage(dimension, dimension);
+                const int blankDimension = std::min(2048, dimension);
+                image = PaintImage(blankDimension, blankDimension);
                 name = "自动创建空白贴图";
             }
             require(!cancel || !*cancel, "Cancelled");
@@ -292,7 +293,8 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                                     image = PaintImage::load(*texture, dimension);
                                     name = texture->key();
                                 } else {
-                                    image = PaintImage(dimension, dimension);
+                                    const int blankDimension = std::min(2048, dimension);
+                                    image = PaintImage(blankDimension, blankDimension);
                                     name = "自动创建空白贴图";
                                 }
                                 task.canvas = std::make_shared<PaintCanvas>(std::move(image));
@@ -465,6 +467,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                         result["conforming_patch"] = {
                             {"examined_triangles", patch.examinedTriangles},
                             {"stitched_edges", patch.stitchedEdges}, {"blocked_edges", patch.blockedEdges},
+                            {"gap_distance", patch.gapDistance}, {"bridged_edges", patch.bridgedEdges},
                             {"conflict_triangles", patch.conflictTriangles}, {"seconds", patch.seconds}};
                     }
                 }

@@ -8,9 +8,6 @@ if (ImGui::Button(p.mappingImage ? "更换贴花图片…" : "加载贴花图片
         p.startDecal(renderer);
 }
 paintHint(!posed ? "正在准备模型表面…" : "图片跟随鼠标贴在模型表面，左键单击盖印。");
-imagePreview();
-paintQuality();
-decalResolution();
 gap();
 bool placementChanged = false;
 ImGui::SetNextItemWidth(-1);
@@ -19,8 +16,28 @@ if (ImGui::Combo("##decal-fit-mode", &conformMode, "曲面贴合\0平面投射\0
     p.decalConforming = conformMode == 0;
     placementChanged = true;
 }
-paintHint(p.decalConforming ? "沿相连表面延伸，自动跨越网格与材质接缝。"
-                           : "沿落点法线投射，适合较平坦的区域。");
+if (ImGui::IsItemHovered())
+    ImGui::SetTooltip(p.decalConforming ? "沿相连表面延伸，自动跨越网格与材质接缝。"
+                                       : "沿落点法线投射，适合较平坦的区域。");
+if (p.decalConforming) {
+    placementChanged |= ImGui::Checkbox("跨越微小缝隙", &p.decalBridgeGaps);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("关闭：沿连续模型表面贴合。\n开启：跨过限定宽度的小缝，沿另一侧表面继续贴图。\n保留缝隙的实际宽度；不会补模型，也不会跨到其他外挂实例。");
+    if (p.decalBridgeGaps) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-1);
+        placementChanged |= ImGui::DragFloat("##decal-gap-mm", &p.decalGapMillimetres, .1f, .1f, 20.f,
+                                              "%.1f mm", ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("允许跨越的最大缝宽：0.1–20 mm，默认2 mm。\n沿边拖动或Ctrl+单击输入。大裂口、明显台阶或不确定连接仍会停止。");
+    }
+}
+gap();
+imagePreview();
+paintQuality();
+if (ImGui::CollapsingHeader("落点清晰度"))
+    decalResolution();
+gap();
 ImGui::SetNextItemWidth(-1);
 placementChanged |=
     ImGui::SliderFloat("##decal-width", &p.decalWidth, .005f, float(std::max(1., renderer.camera.radius * 2)),
@@ -64,11 +81,12 @@ if (ImGui::CollapsingHeader("贴合范围与遮挡")) {
         p.decalDepth = p.decalWidth * .2f;
         p.decalAngle = 0;
         p.decalMaxBend = 65;
+        p.decalGapMillimetres = 2;
         placementChanged = true;
     }
     paintHint("一次盖印自动写入覆盖到的贴图，并作为一步撤销。共用 UV 仍会联动。");
     if (p.decalConforming)
-        paintHint("强曲率或不连续表面可能限制覆盖范围；可缩小贴花分次盖印。");
+        paintHint("强曲率、明显台阶或超过允许缝宽的区域会停止；可缩小贴花分次盖印。");
 }
 if (placementChanged) {
     p.decalWidth = std::isfinite(p.decalWidth) ? std::clamp(p.decalWidth, .005f, 1000.f) : 1.f;
@@ -76,6 +94,7 @@ if (placementChanged) {
     p.decalDepth = std::isfinite(p.decalDepth) ? std::clamp(p.decalDepth, .001f, 1000.f) : .2f;
     p.decalAngle = std::isfinite(p.decalAngle) ? std::remainder(p.decalAngle, 360.f) : 0.f;
     p.decalOpacity = std::isfinite(p.decalOpacity) ? std::clamp(p.decalOpacity, .01f, 1.f) : 1.f;
+    p.decalGapMillimetres = std::isfinite(p.decalGapMillimetres) ? std::clamp(p.decalGapMillimetres, .1f, 20.f) : 2.f;
     p.decalSuppressed = false;
 }
 p.updateDecalPreview(renderer);

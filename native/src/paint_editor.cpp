@@ -237,6 +237,8 @@ struct PaintEditor::Impl {
     bool decalOverlay = true, decalSuppressed = false;
     bool decalConforming = true;
     float decalMaxBend = 65;
+    bool decalBridgeGaps = false;
+    float decalGapMillimetres = 2;
     V3 decalEye = V3::Zero();
     Mat decalViewProjection = Mat::Identity();
     struct ConformPlacement {

@@ -1,7 +1,7 @@
 // Included after PaintEditor::Impl, inside namespace edm. All placement and bake
 // actions use the same entry points as the visible image-brush controls.
 bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const fs::path& directory,
-                                int maximumDimension, bool conforming) {
+                                int maximumDimension, bool conforming, double gapMillimetres) {
     auto& p = *impl;
     auto publish = [&](const char* phase) {
         p.decalDiagnosticResult["phase"] = phase;
@@ -63,7 +63,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                     {"normal", vector(frame.normal)},
                     {"width", frame.width},
                     {"height", frame.height},
-                    {"depth", frame.depth}};
+                    {"depth", frame.depth}, {"gap_distance", options.gapDistance}};
         if (options.projectionEye)
             result["projection_eye"] = vector(*options.projectionEye);
         return result;
@@ -74,7 +74,8 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
         require(actual.center.isApprox(expected.center, 1e-12) &&
                     actual.right.isApprox(expected.right, 1e-12) && actual.up.isApprox(expected.up, 1e-12) &&
                     actual.normal.isApprox(expected.normal, 1e-12) && actual.width == expected.width &&
-                    actual.height == expected.height && actual.depth == expected.depth,
+                    actual.height == expected.height && actual.depth == expected.depth &&
+                    p.decalOptions().gapDistance == p.decalDiagnosticPlacement.gapDistance,
                 "Camera rotation moved the surface decal's model-space placement");
         require(renderer.decalPreview.active &&
                     renderer.decalPreview.center.isApprox(expected.center, 1e-12) &&
@@ -196,6 +197,8 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.ensureAliases();
             p.tool = 2;
             p.decalConforming = conforming;
+            p.decalBridgeGaps = gapMillimetres > 0;
+            p.decalGapMillimetres = gapMillimetres > 0 ? float(gapMillimetres) : 2;
             p.decalSuppressed = true;
             p.decalDiagnosticCamera = renderer.camera;
             p.decalDiagnosticResult = {{"passed", false},
@@ -206,6 +209,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                                        {"uses_editor_default_resolution", maximumDimension == 0},
                                        {"manual_material_selection", false}};
             p.decalDiagnosticResult["surface_conforming"] = conforming;
+            p.decalDiagnosticResult["gap_millimetres"] = gapMillimetres;
             publish("loading_image_and_surface");
             p.decalDiagnosticStage = 1;
             p.loadMappingImage(renderer, image, 2);
@@ -301,7 +305,22 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticResult["curved_patch"] = {
                 {"triangles", patch.triangles.size()}, {"examined_triangles", patch.examinedTriangles},
                 {"stitched_edges", patch.stitchedEdges}, {"blocked_edges", patch.blockedEdges},
+                {"gap_distance", patch.gapDistance}, {"bridged_edges", patch.bridgedEdges},
                 {"conflict_triangles", patch.conflictTriangles}, {"seconds", patch.seconds}};
+            if (gapMillimetres > 0) {
+                p.decalBridgeGaps = false;
+                const auto strict = p.decalOptions();
+                require(strict.gapDistance == 0 && !strict.conformPatch,
+                        "Disabling gap bridging reused the old curved preview");
+                p.decalBridgeGaps = true;
+                const float previousGap = p.decalGapMillimetres;
+                p.decalGapMillimetres = previousGap > .2f ? previousGap * .5f : 1.f;
+                require(!p.decalOptions().conformPatch, "Changing gap width reused the old curved preview");
+                p.decalGapMillimetres = previousGap;
+                require(p.decalOptions().conformPatch == p.decalDiagnosticPlacement.conformPatch,
+                        "Restoring gap options lost the correct immutable preview");
+                p.decalDiagnosticResult["gap_toggle_invalidates_cache"] = true;
+            }
             require(snapshot().empty() && p.entries.empty() && !hasEdits(),
                     "Curved preview allocated or modified paint canvases");
             verifyFixedPlacement();
@@ -452,6 +471,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             const auto& patch = *p.decalDiagnosticPlacement.conformPatch;
             p.decalDiagnosticResult["second_curved_patch"] = {
                 {"triangles", patch.triangles.size()}, {"normal_sign", patch.normalSign},
+                {"gap_distance", patch.gapDistance}, {"bridged_edges", patch.bridgedEdges},
                 {"examined_triangles", patch.examinedTriangles}, {"seconds", patch.seconds}};
             publish("baking_second_surface_decal");
             p.decalDiagnosticStage = 6;

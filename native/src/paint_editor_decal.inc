@@ -55,6 +55,7 @@ SurfaceDecalOptions decalOptions() const {
     options.occlusion = decalOcclusion;
     if (decalConforming) {
         options.projectionEye = decalEye;
+        options.gapDistance = decalBridgeGaps ? std::clamp(double(decalGapMillimetres) / 1000., .0001, .02) : 0;
         const ConformPlacement placement{surface, *decalHit, options, decalMaxBend};
         if (conformReadyPatch && conformReadyPlacement &&
             sameConformPlacement(placement, *conformReadyPlacement))
@@ -63,7 +64,8 @@ SurfaceDecalOptions decalOptions() const {
     return options;
 }
 static bool sameConformPlacement(const ConformPlacement& a, const ConformPlacement& b) {
-    if (a.surface != b.surface || a.hit.primitive != b.hit.primitive || a.bend != b.bend)
+    if (a.surface != b.surface || a.hit.primitive != b.hit.primitive || a.bend != b.bend ||
+        a.options.gapDistance != b.options.gapDistance)
         return false;
     const auto x = surfaceDecalFrame(a.options), y = surfaceDecalFrame(b.options);
     return x.center == y.center && x.right == y.right && x.up == y.up && x.normal == y.normal &&

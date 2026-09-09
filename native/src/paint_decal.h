@@ -12,6 +12,9 @@ struct SurfaceDecalOptions {
     std::optional<std::vector<uint32_t>> candidatePrimitives;
     V3 center = V3::Zero(), normal = V3::UnitZ(), tangent = V3::UnitX();
     double width = 1, height = 1, depth = .1;
+    // Curved mapping only: optional physical boundary-gap limit in world metres (0 disables it).
+    // Connections are virtual; source topology/UVs remain intact and the missing strip keeps its width.
+    double gapDistance = 0;
     // Right-handed rotation around the outward normal. The source image's v coordinate points down.
     double rotationRadians = 0;
     float opacity = 1;

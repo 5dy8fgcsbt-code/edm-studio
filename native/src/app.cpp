@@ -204,6 +204,7 @@ class App {
     fs::path decalTestDirectory, decalTestImage;
     int decalTestDimension = 2048;
     bool decalTestConforming = false;
+    double decalTestGapMillimetres = 0;
     bool strokeTest = false;
     bool smoke = false, noAutoScan = false, noTextures = false, verifyGPU = false;
     Json gpuReport = Json::array();
@@ -1789,7 +1790,7 @@ class App {
             return false;
         if (!decalTestDirectory.empty() &&
             !paint.exerciseDecal(renderer, decalTestImage, decalTestDirectory, decalTestDimension,
-                                 decalTestConforming))
+                                 decalTestConforming, decalTestGapMillimetres))
             return false;
         if (!wrapImage.empty() && !paint.exerciseWrap(renderer, wrapImage, wrapResult))
             return false;
@@ -2030,6 +2031,8 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
             app.decalTestDimension = std::stoi(value());
         else if (key == L"--decal-conform")
             app.decalTestConforming = true;
+        else if (key == L"--decal-gap-mm")
+            app.decalTestGapMillimetres = std::stod(value());
         else if (key == L"--stroke-test")
             app.strokeTest = true;
         else if (key == L"--baseline") {
@@ -2072,6 +2075,11 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
                     app.decalTestDimension == 1024 || app.decalTestDimension == 2048 ||
                     app.decalTestDimension == 4096 || app.decalTestDimension == 8192,
                 "Surface decal diagnostic texture size must be 0 (editor default), 512, 1024, 2048, 4096 or 8192");
+        require(std::isfinite(app.decalTestGapMillimetres) && app.decalTestGapMillimetres >= 0 &&
+                    app.decalTestGapMillimetres <= 20 &&
+                    (!app.decalTestGapMillimetres || app.decalTestGapMillimetres >= .1) &&
+                    (!app.decalTestGapMillimetres || app.decalTestConforming),
+                "--decal-gap-mm requires --decal-conform and 0 (disabled) or a distance from 0.1 to 20 mm");
         require(app.autoPaintDirectory.empty() && app.paintMaterial.empty() && app.wrapImage.empty() &&
                     app.projectionImage.empty() && !app.strokeTest && app.paintProjectDirectory.empty(),
                 "Run the surface decal diagnostic independently");
@@ -2082,7 +2090,7 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
         if (app.capturePath.empty())
             app.capturePath = app.decalTestDirectory / "preview.png";
     } else
-        require(app.decalTestImage.empty() && !app.decalTestConforming,
+        require(app.decalTestImage.empty() && !app.decalTestConforming && !app.decalTestGapMillimetres,
                 "--decal-image and --decal-conform require --decal-test");
     if (!app.autoPaintDirectory.empty()) {
         require(!initial.empty(), "Automatic paint diagnostic requires an EDM model path");

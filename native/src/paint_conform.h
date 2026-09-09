@@ -20,11 +20,11 @@ struct SurfaceDecalPatch {
     uint64_t sourceGeneration = 0;
     size_t sourceTriangleCount = 0;
     uint32_t seedPrimitive = 0;
-    double maxBendDegrees = 65, seamTolerance = 0;
+    double maxBendDegrees = 65, seamTolerance = 0, gapDistance = 0;
     // The visible side chosen by the seed may reverse a two-sided/authored inward-facing sheet.
     // Keep source normals intact and orient visibility consistently over the entire chart.
     double normalSign = 1;
-    size_t examinedTriangles = 0, stitchedEdges = 0, blockedEdges = 0, conflictTriangles = 0;
+    size_t examinedTriangles = 0, stitchedEdges = 0, bridgedEdges = 0, blockedEdges = 0, conflictTriangles = 0;
     double seconds = 0;
     std::vector<SurfaceDecalPatchTriangle> triangles; // Sorted by original primitive ID.
 };
@@ -32,6 +32,9 @@ struct SurfaceDecalPatch {
 // Unfolds adjoining triangles from the hit. maxBendDegrees is the maximum local dihedral angle
 // across an edge, not a total angular limit relative to the seed. Nearby disconnected surfaces,
 // nonmanifold edges, attachment-instance boundaries and inconsistent charts are not crossed.
+// Positive options.gapDistance permits conservative virtual links between opposing boundary strips.
+// It supports subdivided seams, preserves the missing strip's chart distance, and rejects ambiguous,
+// overlapping or stacked sheets. Zero retains the strictly continuous-surface mode.
 // Limits.seconds and cancellation cover construction; topology is capped at 200,000 triangles.
 // An eye is required when frontFacesOnly or occlusion is enabled; disable both for a full wrap.
 std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
