@@ -1,4 +1,5 @@
 #include "renderer.h"
+#include "paint_conform.h"
 #include "shaders.h"
 #include <d3dcompiler.h>
 #include <limits>
@@ -65,7 +66,17 @@ struct FrameData {
 struct SurfaceDecalData {
     std::array<float, 16> vp;
     F4 centerWidth, rightHeight, upDepth, normalOpacity, options, shadow;
+    F4 conformEye;
 };
+struct SurfaceConformRange {
+    uint32_t first = 0, count = 0;
+};
+struct SurfaceConformTriangle {
+    F4 mappingX{}, mappingY{};
+    uint32_t triangle = 0, pad0 = 0, pad1 = 0, pad2 = 0;
+};
+static_assert(sizeof(SurfaceConformRange) == 8 && sizeof(SurfaceConformTriangle) == 48);
+static_assert(sizeof(SurfaceDecalData) % 16 == 0);
 constexpr UINT surfaceDepthSize = 2048;
 } // namespace
 V3 Camera::eye() const {
@@ -480,10 +491,93 @@ void Renderer::beginFrame() {
     float color[]{.035f, .045f, .063f, 1};
     context->ClearRenderTargetView(back.Get(), color);
 }
+void Renderer::updateSurfaceConform() {
+    const auto& patch = decalPreview.conformPatch;
+    if (!patch || !model || patch->sourceScene != model->scene.get() || patch->triangles.empty())
+        return;
+    if (surfaceConformPatch == patch && surfaceConformModel.lock() == model)
+        return;
+    std::vector<const SurfaceDecalPatchTriangle*> ordered;
+    ordered.reserve(patch->triangles.size());
+    for (const auto& triangle : patch->triangles)
+        ordered.push_back(&triangle);
+    std::sort(ordered.begin(), ordered.end(), [](const auto* a, const auto* b) {
+        if (a->triangle.mesh != b->triangle.mesh)
+            return a->triangle.mesh < b->triangle.mesh;
+        return a->triangle.index < b->triangle.index;
+    });
+    std::vector<SurfaceConformRange> ranges(model->scene->meshes.size());
+    std::vector<SurfaceConformTriangle> triangles;
+    triangles.reserve(ordered.size());
+    for (const auto* source : ordered) {
+        const auto& triangle = source->triangle;
+        require(triangle.mesh < ranges.size() &&
+                    triangle.index < model->scene->meshes[triangle.mesh].indices.size() / 3,
+                "Curved decal preview has a stale source triangle");
+        auto& range = ranges[triangle.mesh];
+        if (!range.count)
+            range.first = uint32_t(triangles.size());
+        else
+            require(triangles.back().triangle != triangle.index,
+                    "Curved decal preview contains a duplicate source triangle");
+        V3 a = triangle.world[1] - triangle.world[0], b = triangle.world[2] - triangle.world[0];
+        V3 cross = a.cross(b);
+        double determinant = cross.squaredNorm();
+        require(std::isfinite(determinant) && determinant > 1e-30,
+                "Curved decal preview contains degenerate geometry");
+        V3 g1 = b.cross(cross) / determinant, g2 = cross.cross(a) / determinant;
+        SurfaceConformTriangle mapped;
+        for (int axis = 0; axis < 2; ++axis) {
+            V3 gradient = g1 * (source->coordinates[1][axis] - source->coordinates[0][axis]) +
+                          g2 * (source->coordinates[2][axis] - source->coordinates[0][axis]);
+            double intercept = source->coordinates[0][axis] - gradient.dot(triangle.world[0]);
+            require(gradient.allFinite() && std::isfinite(intercept),
+                    "Curved decal preview contains invalid chart coordinates");
+            require(gradient.cwiseAbs().maxCoeff() <= std::numeric_limits<float>::max() &&
+                        std::abs(intercept) <= std::numeric_limits<float>::max(),
+                    "Curved decal preview chart exceeds GPU coordinate precision");
+            F4 coefficients{float(gradient.x()), float(gradient.y()), float(gradient.z()),
+                            float(intercept)};
+            if (axis == 0)
+                mapped.mappingX = coefficients;
+            else
+                mapped.mappingY = coefficients;
+        }
+        mapped.triangle = triangle.index;
+        triangles.push_back(mapped);
+        ++range.count;
+    }
+    // Build all resources before publication. The scene's geometry buffers and source UVs stay intact.
+    auto rangeBuffer = buffer(device.Get(), ranges.size() * sizeof(SurfaceConformRange),
+                              D3D11_BIND_SHADER_RESOURCE, ranges.data(), sizeof(SurfaceConformRange));
+    auto triangleBuffer = buffer(device.Get(), triangles.size() * sizeof(SurfaceConformTriangle),
+                                 D3D11_BIND_SHADER_RESOURCE, triangles.data(),
+                                 sizeof(SurfaceConformTriangle));
+    auto rangeView = structured(device.Get(), rangeBuffer.Get(), UINT(ranges.size()));
+    auto triangleView = structured(device.Get(), triangleBuffer.Get(), UINT(triangles.size()));
+    surfaceConformRanges = std::move(rangeBuffer);
+    surfaceConformTriangles = std::move(triangleBuffer);
+    surfaceConformRangesView = std::move(rangeView);
+    surfaceConformTrianglesView = std::move(triangleView);
+    surfaceConformPatch = patch;
+    surfaceConformModel = model;
+    surfaceConformProjectionValid = false;
+    ++decalPatchUploads;
+}
 void Renderer::updateSurfaceDecal() {
     const auto& preview = decalPreview;
+    if (surfaceConformPatch && (!model || surfaceConformModel.lock() != model)) {
+        surfaceConformPatch.reset();
+        surfaceConformModel.reset();
+        surfaceConformRanges.Reset();
+        surfaceConformTriangles.Reset();
+        surfaceConformRangesView.Reset();
+        surfaceConformTrianglesView.Reset();
+        surfaceConformProjectionValid = false;
+    }
     SurfaceDecalData data{};
-    ID3D11ShaderResourceView* resources[2]{};
+    ID3D11ShaderResourceView* resources[4]{};
+    bool conform = bool(preview.conformPatch);
     bool active = options.editedLivery && preview.active && model && preview.image && preview.image->view &&
                   preview.center.allFinite() && preview.right.allFinite() && preview.up.allFinite() &&
                   preview.normal.allFinite() && std::isfinite(preview.width) && preview.width > 1e-8 &&
@@ -493,6 +587,14 @@ void Renderer::updateSurfaceDecal() {
                   std::abs(preview.up.squaredNorm() - 1) < 1e-4 &&
                   std::abs(preview.normal.squaredNorm() - 1) < 1e-4 &&
                   (preview.right.cross(preview.up) - preview.normal).norm() < 1e-4;
+    if (active && conform) {
+        active = preview.conformPatch->sourceScene == model->scene.get() &&
+                 !preview.conformPatch->triangles.empty() && preview.projectionVP.allFinite() &&
+                 ((!preview.occlusion && !preview.frontFacesOnly) ||
+                  (preview.conformPatch->projectionEye && preview.conformPatch->projectionEye->allFinite()));
+        if (active)
+            updateSurfaceConform();
+    }
     if (active) {
         V3 boundsCenter = (model->posedMin + model->posedMax) * .5;
         V3 boundsExtent = (model->posedMax - model->posedMin) * .5;
@@ -508,6 +610,36 @@ void Renderer::updateSurfaceDecal() {
         matrix(0, 3) = -2 * preview.right.dot(preview.center) / preview.width;
         matrix(1, 3) = -2 * preview.up.dot(preview.center) / preview.height;
         matrix(2, 3) = (front + preview.normal.dot(preview.center)) / range;
+        if (conform) {
+            matrix = preview.projectionVP;
+            // A placed chart can extend beyond the viewport. Enlarge only the frozen camera's
+            // horizontal/vertical coverage so these texels still receive placement-eye occlusion.
+            if (!surfaceConformProjectionValid ||
+                !(surfaceConformProjectionInput.array() == preview.projectionVP.array()).all()) {
+                double extentX = 1, extentY = 1;
+                for (const auto& item : preview.conformPatch->triangles)
+                    for (const auto& point : item.triangle.world) {
+                        V4 clip = matrix * V4(point.x(), point.y(), point.z(), 1);
+                        if (clip.w() > 1e-8) {
+                            extentX = std::max(extentX, std::abs(clip.x() / clip.w()) * 1.01);
+                            extentY = std::max(extentY, std::abs(clip.y() / clip.w()) * 1.01);
+                        }
+                    }
+                matrix.row(0) /= extentX;
+                matrix.row(1) /= extentY;
+                surfaceConformProjectionInput = preview.projectionVP;
+                surfaceConformProjection = matrix;
+                surfaceConformProjectionValid = true;
+            } else
+                matrix = surfaceConformProjection;
+            if (preview.conformPatch->projectionEye) {
+                const V3& eye = *preview.conformPatch->projectionEye;
+                data.conformEye = {float(eye.x()), float(eye.y()), float(eye.z()),
+                                   float(preview.conformPatch->normalSign)};
+            }
+            resources[2] = surfaceConformRangesView.Get();
+            resources[3] = surfaceConformTrianglesView.Get();
+        }
         data.vp = row(matrix);
         data.centerWidth = {float(preview.center.x()), float(preview.center.y()), float(preview.center.z()),
                             float(preview.width)};
@@ -517,11 +649,11 @@ void Renderer::updateSurfaceDecal() {
                         float(preview.depth)};
         data.normalOpacity = {float(preview.normal.x()), float(preview.normal.y()), float(preview.normal.z()),
                               std::clamp(preview.opacity, 0.f, 1.f)};
-        data.options = {1, float(preview.frontFacesOnly), float(preview.occlusion),
+        data.options = {conform ? 2.f : 1.f, float(preview.frontFacesOnly), float(preview.occlusion),
                         float(preview.preserveAlpha)};
         // Receiver-plane correction in the PS removes slope acne without a large normal offset.
         // The remaining bias covers floating-point error and the CPU ray's intersection tolerance.
-        data.shadow = {float(std::max(1e-6, range * 2e-6) / range), 1.f / surfaceDepthSize,
+        data.shadow = {conform ? 1e-6f : float(std::max(1e-6, range * 2e-6) / range), 1.f / surfaceDepthSize,
                        preview.image->linearView ? 1.f : 0.f, 0};
         context->UpdateSubresource(surfaceDecalFrame.Get(), 0, nullptr, &data, 0, 0);
         context->VSSetConstantBuffers(1, 1, surfaceDecalFrame.GetAddressOf());
@@ -587,12 +719,12 @@ void Renderer::updateSurfaceDecal() {
                         continue;
                     V3 center = (draw.posedMin + draw.posedMax) * .5 - preview.center;
                     V3 extent = (draw.posedMax - draw.posedMin) * .5;
-                    if (std::abs(center.dot(preview.right)) >
+                    if (!conform && (std::abs(center.dot(preview.right)) >
                             preview.width * .5 + preview.right.cwiseAbs().dot(extent) + margin ||
                         std::abs(center.dot(preview.up)) >
                             preview.height * .5 + preview.up.cwiseAbs().dot(extent) + margin ||
                         center.dot(preview.normal) + preview.normal.cwiseAbs().dot(extent) <
-                            -preview.depth - margin)
+                            -preview.depth - margin))
                         continue;
                     context->DrawIndexedInstanced(draw.count, 1, draw.first, draw.base, draw.index);
                 }
@@ -610,7 +742,7 @@ void Renderer::updateSurfaceDecal() {
         context->VSSetConstantBuffers(1, 1, surfaceDecalFrame.GetAddressOf());
     }
     context->PSSetConstantBuffers(1, 1, surfaceDecalFrame.GetAddressOf());
-    context->PSSetShaderResources(6, 2, resources);
+    context->PSSetShaderResources(6, 4, resources);
 }
 void Renderer::render(int width, int height) {
     auto start = Clock::now();

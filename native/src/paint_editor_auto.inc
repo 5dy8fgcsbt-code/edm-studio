@@ -174,9 +174,9 @@ std::vector<int> brushMaterials(const StrokeContext& context, const PaintHit& hi
     }
     return {ids.begin(), ids.end()};
 }
-template <class Options, class Find, class Apply>
+template <class Options, class Find, class Apply, class Prepare = std::nullptr_t>
 void startAutomaticMapping(Options options, Find find, Apply apply, bool verify, bool projection,
-                           bool decal = false) {
+                           bool decal = false, Prepare prepare = nullptr) {
     require(!controlsBusy(), "请等待当前绘制任务完成");
     requireWritableLayer();
     require(mappingImage && surface && surfaceArgs == currentArgs, "请载入图片并等待当前姿态的绘制表面就绪");
@@ -225,10 +225,14 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
     saved = false;
     try {
         start(
-            [this, options, find, apply, verify, projection, decal, source, posed, budget, aliases, base,
+            [this, options, find, apply, prepare, verify, projection, decal, source, posed, budget, aliases, base,
              model, extra, existing, existingBytes, dimension, layers, active, prepared,
              outcome](Progress progress, const std::atomic_bool* cancel) mutable {
                 options.limits = budget->remaining();
+                if constexpr (!std::is_same_v<Prepare, std::nullptr_t>) {
+                    prepare(options, progress, cancel);
+                    options.limits = budget->remaining();
+                }
                 auto candidates = find(*posed, options, progress, cancel);
                 require(!candidates.materials.empty(),
                         "图片覆盖范围内没有可绘制的表面，请调整图片位置或贴花范围。");
@@ -453,6 +457,17 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                 result["max_inflight"] = maxInflight;
                 result["undo_redo_match"] = verify;
                 result["surface_decal"] = decal;
+                if constexpr (std::is_same_v<Options, SurfaceDecalOptions>) {
+                    result["surface_conforming"] = bool(options.conformPatch);
+                    if (options.conformPatch) {
+                        result["conforming_triangles"] = options.conformPatch->triangles.size();
+                        const auto& patch = *options.conformPatch;
+                        result["conforming_patch"] = {
+                            {"examined_triangles", patch.examinedTriangles},
+                            {"stitched_edges", patch.stitchedEdges}, {"blocked_edges", patch.blockedEdges},
+                            {"conflict_triangles", patch.conflictTriangles}, {"seconds", patch.seconds}};
+                    }
+                }
                 return [this, result, projection, decal] {
                     (projection ? projectionResult : decal ? decalResult : wrapResult) = result;
                     status = std::string(projection ? "投影完成" : "贴花完成") + " · 自动写入 " +

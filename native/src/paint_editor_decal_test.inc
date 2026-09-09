@@ -1,7 +1,7 @@
 // Included after PaintEditor::Impl, inside namespace edm. All placement and bake
 // actions use the same entry points as the visible image-brush controls.
 bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const fs::path& directory,
-                                int maximumDimension) {
+                                int maximumDimension, bool conforming) {
     auto& p = *impl;
     auto publish = [&](const char* phase) {
         p.decalDiagnosticResult["phase"] = phase;
@@ -57,13 +57,16 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
     auto frameJson = [](const SurfaceDecalOptions& options) {
         auto frame = surfaceDecalFrame(options);
         auto vector = [](const V3& value) { return Json::array({value.x(), value.y(), value.z()}); };
-        return Json{{"center", vector(frame.center)},
+        Json result{{"center", vector(frame.center)},
                     {"right", vector(frame.right)},
                     {"up", vector(frame.up)},
                     {"normal", vector(frame.normal)},
                     {"width", frame.width},
                     {"height", frame.height},
                     {"depth", frame.depth}};
+        if (options.projectionEye)
+            result["projection_eye"] = vector(*options.projectionEye);
+        return result;
     };
     auto verifyFixedPlacement = [&] {
         auto expected = surfaceDecalFrame(p.decalDiagnosticPlacement);
@@ -79,6 +82,80 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                     renderer.decalPreview.up.isApprox(expected.up, 1e-12) &&
                     renderer.decalPreview.normal.isApprox(expected.normal, 1e-12),
                 "Surface decal preview frame drifted from the CPU bake frame");
+        if (conforming)
+            require(renderer.decalPreview.conformPatch == p.decalDiagnosticPlacement.conformPatch &&
+                        p.decalOptions().conformPatch == p.decalDiagnosticPlacement.conformPatch,
+                    "Curved preview and bake did not retain the same immutable surface chart");
+    };
+    auto verifyPreviewBake = [&](const PaintSnapshot& originalPixels, const std::string& prefix) {
+        const auto savedPreview = renderer.decalPreview;
+        const auto overrides = renderer.diffuseOverrides;
+        const auto size = viewportSize();
+        auto restore = [&] {
+            renderer.decalPreview = savedPreview;
+            renderer.diffuseOverrides = overrides;
+        };
+        auto capture = [&](const char* name) {
+            renderer.render(int(size.x), int(size.y));
+            auto path = directory / (prefix + "-" + name);
+            renderer.capture(path, false);
+            return PaintImage::load(ImageSource{path}, 8192);
+        };
+        try {
+            std::map<int, std::shared_ptr<GpuTexture>> originals;
+            for (const auto& [id, pixels] : originalPixels) {
+                auto key = p.canvasIndex(id);
+                if (!originals.contains(key))
+                    originals[key] = uploadTexture(renderer.device.Get(), *pixels->texture(true));
+                renderer.diffuseOverrides[id] = originals.at(key);
+            }
+            renderer.decalPreview.active = false;
+            const auto base = capture("equal-resolution-base.png");
+            p.decalSuppressed = false;
+            p.updateDecalPreview(renderer);
+            require(renderer.decalPreview.active && renderer.decalPreview.conformPatch,
+                    "Curved placement disappeared before preview/bake comparison");
+            const bool occlusion = renderer.decalPreview.occlusion;
+            renderer.decalPreview.occlusion = false;
+            capture("equal-resolution-preview-no-occlusion.png");
+            renderer.decalPreview.occlusion = occlusion;
+            const auto preview = capture("equal-resolution-preview.png");
+            renderer.diffuseOverrides = overrides;
+            renderer.decalPreview.active = false;
+            const auto baked = capture("equal-resolution-baked.png");
+            size_t affected = 0, largeErrors = 0;
+            double absoluteError = 0;
+            for (size_t offset = 0; offset < base.rgba.size(); offset += 4) {
+                int visibleChange = 0, error = 0;
+                for (int channel = 0; channel < 3; ++channel) {
+                    visibleChange = std::max(visibleChange,
+                        std::max(std::abs(int(preview.rgba[offset + channel]) - base.rgba[offset + channel]),
+                                 std::abs(int(baked.rgba[offset + channel]) - base.rgba[offset + channel])));
+                    error = std::max(error, std::abs(int(preview.rgba[offset + channel]) -
+                                                       baked.rgba[offset + channel]));
+                }
+                if (visibleChange < 8)
+                    continue;
+                ++affected;
+                absoluteError += error;
+                largeErrors += error > 32;
+            }
+            Json comparison{{"affected_pixels", affected}, {"large_error_pixels", largeErrors},
+                            {"mean_max_channel_error", affected ? absoluteError / affected : 0},
+                            {"large_error_threshold", 32}, {"maximum_large_error_fraction", .15},
+                            {"same_base_resolution", true}, {"same_patch", true}};
+            p.decalDiagnosticResult[prefix == "04" ? "preview_bake_comparison" :
+                                                     "second_preview_bake_comparison"] = comparison;
+            writeJson(directory / (prefix + "-preview-bake-report.json"), comparison);
+            require(affected > 32 && largeErrors <= affected * .15 && absoluteError / affected < 14,
+                    "Curved GPU preview differs materially from its baked texture mapping");
+            restore();
+            p.decalSuppressed = true;
+        } catch (...) {
+            restore();
+            p.decalSuppressed = true;
+            throw;
+        }
     };
     auto rejectOutside = [&](ImVec2 size) {
         auto before = snapshot();
@@ -116,6 +193,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.paintMaxDimension = maximumDimension;
             p.ensureAliases();
             p.tool = 2;
+            p.decalConforming = conforming;
             p.decalSuppressed = true;
             p.decalDiagnosticCamera = renderer.camera;
             p.decalDiagnosticResult = {{"passed", false},
@@ -124,6 +202,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                                        {"initial_canvases", p.entries.size()},
                                        {"maximum_new_texture_dimension", maximumDimension},
                                        {"manual_material_selection", false}};
+            p.decalDiagnosticResult["surface_conforming"] = conforming;
             publish("loading_image_and_surface");
             p.decalDiagnosticStage = 1;
             p.loadMappingImage(renderer, image, 2);
@@ -196,11 +275,40 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                     "Surface decal could not position on its first visible surface");
             p.decalDiagnosticPlacement = p.decalOptions();
             p.updateDecalPreview(renderer);
+            if (conforming) {
+                publish("preparing_curved_preview");
+                p.decalDiagnosticStage = 11;
+                return false;
+            }
             require(snapshot().empty() && p.entries.empty() && !hasEdits(),
                     "Surface decal preview allocated or modified a paint canvas");
             verifyFixedPlacement();
             p.decalDiagnosticResult["placement"] = frameJson(p.decalDiagnosticPlacement);
             publish("displaying_surface_preview");
+            p.decalDiagnosticStage = 2;
+            return false;
+        }
+        if (p.decalDiagnosticStage == 11) {
+            p.updateDecalPreview(renderer);
+            require(p.conformPreviewError.empty(), p.conformPreviewError);
+            if (!renderer.decalPreview.active)
+                return false;
+            p.decalDiagnosticPlacement = p.decalOptions();
+            const auto& patch = *p.decalDiagnosticPlacement.conformPatch;
+            p.decalDiagnosticResult["curved_patch"] = {
+                {"triangles", patch.triangles.size()}, {"examined_triangles", patch.examinedTriangles},
+                {"stitched_edges", patch.stitchedEdges}, {"blocked_edges", patch.blockedEdges},
+                {"conflict_triangles", patch.conflictTriangles}, {"seconds", patch.seconds}};
+            require(snapshot().empty() && p.entries.empty() && !hasEdits(),
+                    "Curved preview allocated or modified paint canvases");
+            verifyFixedPlacement();
+            p.decalDiagnosticResult["placement"] = frameJson(p.decalDiagnosticPlacement);
+            const auto size = viewportSize();
+            renderer.decalPreview.active = false;
+            renderer.render(int(size.x), int(size.y));
+            renderer.capture(directory / "00-before-preview.png", false);
+            p.updateDecalPreview(renderer);
+            publish("displaying_curved_preview");
             p.decalDiagnosticStage = 2;
             return false;
         }
@@ -225,6 +333,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticDepthUpdates = renderer.decalDepthUpdates;
             p.decalDiagnosticUploads = renderer.model->vertexUploads;
             p.decalDiagnosticEvaluations = renderer.model->sceneEvaluations;
+            p.decalDiagnosticPatchUploads = renderer.viewportMetrics().value("decal_patch_uploads", 0ull);
             renderer.camera.yaw += .42;
             renderer.camera.pitch = std::clamp(renderer.camera.pitch + .12, -.8, 1.2);
             p.updateDecalPreview(renderer);
@@ -237,7 +346,9 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             verifyFixedPlacement();
             require(renderer.decalDepthUpdates == p.decalDiagnosticDepthUpdates &&
                         renderer.model->vertexUploads == p.decalDiagnosticUploads &&
-                        renderer.model->sceneEvaluations == p.decalDiagnosticEvaluations,
+                        renderer.model->sceneEvaluations == p.decalDiagnosticEvaluations &&
+                        renderer.viewportMetrics().value("decal_patch_uploads", 0ull) ==
+                            p.decalDiagnosticPatchUploads,
                     "Orbiting a fixed decal preview rebuilt geometry or its projector depth map");
             require(p.entries.empty() && snapshot().empty(), "Orbiting a preview modified paint pixels");
             renderer.capture(directory / "02-preview-orbit.png", false);
@@ -247,6 +358,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticResult["preview"]["camera_geometry_uploads"] = 0;
             p.decalDiagnosticResult["preview"]["camera_scene_evaluations"] = 0;
             p.decalDiagnosticResult["preview"]["camera_depth_rebuilds"] = 0;
+            p.decalDiagnosticResult["preview"]["camera_patch_uploads"] = 0;
             renderer.camera = p.decalDiagnosticCamera;
             p.updateDecalPreview(renderer);
             p.decalDiagnosticStage = 4;
@@ -280,6 +392,8 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticResult["first_decal"]["gpu_canvases_checked"] = verifyGpu();
             p.decalDiagnosticResult["first_decal"]["gpu_pixels_match_without_preview"] = true;
             p.decalDiagnosticResult["first_decal"]["original_canvases_restored"] = different;
+            if (conforming)
+                verifyPreviewBake(p.decalDiagnosticBefore, "04");
             saveImages(p.decalDiagnosticBefore, "original-textures");
             saveImages(p.decalDiagnosticFirst, "after-first-decal");
             const auto size = viewportSize();
@@ -291,6 +405,30 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
                     "Surface decal could not position on its second visible surface");
             compareImages(p.decalDiagnosticFirst);
             p.decalDiagnosticResult["second_placement"] = frameJson(p.decalOptions());
+            p.decalDiagnosticResult["second_seed"] = {{"primitive", p.decalHit->primitive},
+                {"mesh", p.decalHit->mesh}, {"triangle", p.decalHit->triangle},
+                {"material", p.decalHit->material}};
+            if (conforming) {
+                publish("preparing_second_curved_preview");
+                p.decalDiagnosticStage = 12;
+                return false;
+            }
+            publish("baking_second_surface_decal");
+            p.decalDiagnosticStage = 6;
+            p.startDecal(renderer, true);
+            return false;
+        }
+        if (p.decalDiagnosticStage == 12) {
+            p.updateDecalPreview(renderer);
+            require(p.conformPreviewError.empty(), p.conformPreviewError);
+            if (!renderer.decalPreview.active)
+                return false;
+            p.decalDiagnosticPlacement = p.decalOptions();
+            verifyFixedPlacement();
+            const auto& patch = *p.decalDiagnosticPlacement.conformPatch;
+            p.decalDiagnosticResult["second_curved_patch"] = {
+                {"triangles", patch.triangles.size()}, {"normal_sign", patch.normalSign},
+                {"examined_triangles", patch.examinedTriangles}, {"seconds", patch.seconds}};
             publish("baking_second_surface_decal");
             p.decalDiagnosticStage = 6;
             p.startDecal(renderer, true);
@@ -329,6 +467,8 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticResult["second_decal"] = p.decalResult;
             p.decalDiagnosticResult["second_decal"]["gpu_canvases_checked"] = verifyGpu();
             p.decalDiagnosticResult["second_decal"]["gpu_pixels_match_without_preview"] = true;
+            if (conforming)
+                verifyPreviewBake(secondBaseline, "05");
             p.decalDiagnosticResult["two_stamp_history_order_match"] = true;
             saveImages(p.decalDiagnosticAfter, "after-two-decals");
             p.decalDiagnosticResult["live_livery_comparison"] =

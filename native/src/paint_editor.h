@@ -43,6 +43,6 @@ class PaintEditor {
     bool exerciseAutomatic(Renderer& renderer, const fs::path& image, const fs::path& directory,
                            int maximumDimension = 512);
     bool exerciseDecal(Renderer& renderer, const fs::path& image, const fs::path& directory,
-                       int maximumDimension = 2048);
+                       int maximumDimension = 2048, bool conforming = false);
 };
 } // namespace edm

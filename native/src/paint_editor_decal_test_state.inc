@@ -7,3 +7,4 @@ PaintStrokePoint decalDiagnosticFirstPoint, decalDiagnosticSecondPoint;
 Camera decalDiagnosticCamera;
 SurfaceDecalOptions decalDiagnosticPlacement;
 uint64_t decalDiagnosticDepthUpdates = 0, decalDiagnosticUploads = 0, decalDiagnosticEvaluations = 0;
+uint64_t decalDiagnosticPatchUploads = 0;

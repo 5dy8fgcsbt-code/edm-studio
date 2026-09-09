@@ -6,6 +6,7 @@
 #include "paint_wrap.h"
 #include "paint_projection.h"
 #include "paint_decal.h"
+#include "paint_conform.h"
 #include <imgui_stdlib.h>
 #include <shobjidl.h>
 #include <future>
@@ -190,6 +191,7 @@ struct PaintEditor::Impl {
     std::vector<std::shared_ptr<Work>> work;
     uint64_t generation = 0;
     int material = -1, tool = 0;
+    int lastPanelTool = -1;
     int paintMaxDimension = 2048;
     PaintBatchHistory history;
     std::vector<PaintLayerInfo> layerInfos{{1, "图层 1", true, 1, true}};
@@ -232,6 +234,25 @@ struct PaintEditor::Impl {
     float decalWidth = 1, decalHeight = 1, decalDepth = .2f, decalAngle = 0, decalOpacity = 1;
     bool decalAspectLocked = true, decalFront = true, decalOcclusion = true;
     bool decalOverlay = true, decalSuppressed = false;
+    bool decalConforming = true;
+    float decalMaxBend = 65;
+    V3 decalEye = V3::Zero();
+    Mat decalViewProjection = Mat::Identity();
+    struct ConformPlacement {
+        std::shared_ptr<PaintSurface> surface;
+        PaintHit hit;
+        SurfaceDecalOptions options;
+        float bend = 65;
+    };
+    struct ConformJob {
+        ConformPlacement placement;
+        std::shared_ptr<std::atomic_bool> cancel = std::make_shared<std::atomic_bool>(false);
+        std::future<std::shared_ptr<const SurfaceDecalPatch>> future;
+    };
+    std::unique_ptr<ConformJob> conformJob;
+    std::optional<ConformPlacement> conformReadyPlacement;
+    std::shared_ptr<const SurfaceDecalPatch> conformReadyPatch;
+    std::string conformPreviewError;
     ImVec2 decalScreen{};
     ImVec2 decalSuppressedScreen{};
     Json decalResult;
@@ -499,6 +520,12 @@ struct PaintEditor::Impl {
         stop();
     }
     void stop() {
+        if (conformJob) {
+            *conformJob->cancel = true;
+            conformJob.reset(); // Future joins a cancelled, read-only preview worker.
+        }
+        conformReadyPatch.reset();
+        conformReadyPlacement.reset();
         for (auto& w : work)
             w->cancel = true;
         for (auto& w : work)
@@ -657,7 +684,9 @@ struct PaintEditor::Impl {
             p("读取图片与预览…");
             auto image = std::make_shared<PaintImage>(PaintImage::load(ImageSource{path}, 8192));
             require(!*cancel, "Cancelled");
-            auto preview = loadTexture(ImageSource{path}, 512);
+            // The image brush preview and bake must read identical decoded pixels. A separately
+            // resized thumbnail changes small lettering and transparent edges before mapping.
+            auto preview = imageTool == 2 ? image->texture() : loadTexture(ImageSource{path}, 512);
             require(!*cancel, "Cancelled");
             return [this, &renderer, path, gen, imageTool, image, preview] {
                 if (gen != generation)

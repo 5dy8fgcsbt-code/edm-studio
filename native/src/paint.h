@@ -145,6 +145,9 @@ class PaintSurface {
     PaintSurface& operator=(PaintSurface&&) noexcept;
     PaintSurface(const PaintSurface&) = delete;
     PaintSurface& operator=(const PaintSurface&) = delete;
+    // Identity of the immutable posed geometry/BVH, retained by moves and replaced on move assignment.
+    // Unlike the object address, this cannot accidentally validate a chart from an earlier pose.
+    uint64_t generation() const noexcept;
     const Scene& scene() const;
     size_t triangleCount() const;
     PaintTriangle triangle(uint32_t primitive) const;

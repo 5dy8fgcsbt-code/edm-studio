@@ -203,6 +203,7 @@ class App {
     int autoPaintDimension = 512;
     fs::path decalTestDirectory, decalTestImage;
     int decalTestDimension = 2048;
+    bool decalTestConforming = false;
     bool strokeTest = false;
     bool smoke = false, noAutoScan = false, noTextures = false, verifyGPU = false;
     Json gpuReport = Json::array();
@@ -1787,7 +1788,8 @@ class App {
         if (!detachmentTest.empty() && !exerciseDetachmentInteraction())
             return false;
         if (!decalTestDirectory.empty() &&
-            !paint.exerciseDecal(renderer, decalTestImage, decalTestDirectory, decalTestDimension))
+            !paint.exerciseDecal(renderer, decalTestImage, decalTestDirectory, decalTestDimension,
+                                 decalTestConforming))
             return false;
         if (!wrapImage.empty() && !paint.exerciseWrap(renderer, wrapImage, wrapResult))
             return false;
@@ -2026,6 +2028,8 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
             app.decalTestImage = value();
         else if (key == L"--decal-size")
             app.decalTestDimension = std::stoi(value());
+        else if (key == L"--decal-conform")
+            app.decalTestConforming = true;
         else if (key == L"--stroke-test")
             app.strokeTest = true;
         else if (key == L"--baseline") {
@@ -2077,7 +2081,8 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
         if (app.capturePath.empty())
             app.capturePath = app.decalTestDirectory / "preview.png";
     } else
-        require(app.decalTestImage.empty(), "--decal-image requires --decal-test");
+        require(app.decalTestImage.empty() && !app.decalTestConforming,
+                "--decal-image and --decal-conform require --decal-test");
     if (!app.autoPaintDirectory.empty()) {
         require(!initial.empty(), "Automatic paint diagnostic requires an EDM model path");
         require(!app.autoPaintImage.empty(), "Specify --auto-paint-image with the diagnostic PNG");

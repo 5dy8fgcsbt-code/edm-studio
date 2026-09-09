@@ -77,6 +77,13 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
         gap();
         PaintDisabledScope operationsDisabled(p.controlsBusy());
         const bool posed = p.surface && p.surfaceArgs == args;
+        // Give the image brush's load/placement controls room when switching into it. The layer
+        // manager remains one click away and can be expanded normally for the rest of the session.
+        if (p.lastPanelTool != p.tool) {
+            if (p.tool == 2)
+                ImGui::SetNextItemOpen(false, ImGuiCond_Always);
+            p.lastPanelTool = p.tool;
+        }
 #include "paint_editor_layers_panel.inc"
 
         // Each mode is usable before any editable canvas exists. Loading images and applying them

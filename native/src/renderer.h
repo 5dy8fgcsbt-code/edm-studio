@@ -4,6 +4,7 @@
 #include <dxgi1_2.h>
 #include <wrl/client.h>
 namespace edm {
+struct SurfaceDecalPatch;
 template <class T> using Com = Microsoft::WRL::ComPtr<T>;
 struct Camera {
     V3 target = V3::Zero();
@@ -77,6 +78,10 @@ struct SurfaceDecalPreview {
     float opacity = 1;
     bool frontFacesOnly = true, occlusion = true, preserveAlpha = true;
     std::shared_ptr<GpuTexture> image;
+    // Curved preview reads exactly the immutable chart used by the texture baker. The camera
+    // matrix belongs to placement, so orbiting the viewport never moves the visibility emitter.
+    std::shared_ptr<const SurfaceDecalPatch> conformPatch;
+    Mat projectionVP = Mat::Identity();
 };
 struct TextureBindings {
     std::vector<std::array<std::string, 3>> material;
@@ -106,6 +111,13 @@ class Renderer {
     Mat surfaceDecalDepthMatrix = Mat::Zero();
     uint64_t surfaceDecalDepthEvaluation = 0;
     bool surfaceDecalDepthValid = false;
+    Com<ID3D11Buffer> surfaceConformRanges, surfaceConformTriangles;
+    Com<ID3D11ShaderResourceView> surfaceConformRangesView, surfaceConformTrianglesView;
+    std::shared_ptr<const SurfaceDecalPatch> surfaceConformPatch;
+    std::weak_ptr<GpuModel> surfaceConformModel;
+    Mat surfaceConformProjectionInput = Mat::Zero(), surfaceConformProjection = Mat::Zero();
+    bool surfaceConformProjectionValid = false;
+    void updateSurfaceConform();
     void updateSurfaceDecal();
     Com<ID3D11RasterizerState> raster[2][3];
     Com<ID3D11DepthStencilState> depthWrite, depthRead, depthOff;
@@ -125,6 +137,7 @@ class Renderer {
     RenderOptions options;
     SurfaceDecalPreview decalPreview;
     uint64_t decalDepthUpdates = 0;
+    uint64_t decalPatchUploads = 0;
     uint64_t drawCalls = 0, visibleTriangles = 0;
     double renderMs = 0;
     std::string adapterName;
@@ -145,7 +158,8 @@ class Renderer {
                 {"edited_livery_visible", options.editedLivery},
                 {"connectors_visible", options.connectors},
                 {"attachments_visible", options.attachments},
-                {"decal_depth_updates", decalDepthUpdates}};
+                {"decal_depth_updates", decalDepthUpdates},
+                {"decal_patch_uploads", decalPatchUploads}};
     }
 };
 } // namespace edm

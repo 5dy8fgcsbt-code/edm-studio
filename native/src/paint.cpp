@@ -6,6 +6,15 @@ namespace edm {
 namespace {
 constexpr uint32_t tileSize = 64;
 std::atomic<uint64_t> nextPaintHistoryToken{1};
+std::atomic<uint64_t> nextPaintSurfaceGeneration{1};
+uint64_t reservePaintSurfaceGeneration() {
+    auto token = nextPaintSurfaceGeneration.load(std::memory_order_relaxed);
+    do {
+        if (token == UINT64_MAX)
+            throw std::overflow_error("Paint surface generation range exhausted");
+    } while (!nextPaintSurfaceGeneration.compare_exchange_weak(token, token + 1, std::memory_order_relaxed));
+    return token;
+}
 uint64_t reservePaintHistoryToken() {
     auto token = nextPaintHistoryToken.load(std::memory_order_relaxed);
     do {
@@ -480,6 +489,7 @@ V3 PaintTriangle::normal() const {
     return result.squaredNorm() > 1e-24 ? V3(result.normalized()) : V3::UnitY();
 }
 struct PaintSurface::Impl {
+    const uint64_t generation = reservePaintSurfaceGeneration();
     struct Cache {
         std::vector<F3> positions, normals;
         std::vector<F2> uv;
@@ -651,6 +661,9 @@ PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args,
 PaintSurface::~PaintSurface() = default;
 PaintSurface::PaintSurface(PaintSurface&&) noexcept = default;
 PaintSurface& PaintSurface::operator=(PaintSurface&&) noexcept = default;
+uint64_t PaintSurface::generation() const noexcept {
+    return impl ? impl->generation : 0;
+}
 const Scene& PaintSurface::scene() const {
     return *impl->scene;
 }
@@ -684,6 +697,8 @@ std::optional<PaintHit> PaintSurface::raycast(const V3& origin, const V3& direct
         return {};
     V3 ray = direction.normalized();
     std::optional<PaintHit> hit;
+    const double requestedMaxDistance = maxDistance;
+    double closestDistance = maxDistance;
     // BVH construction is capped at depth 48; a fixed stack removes per-texel heap allocations.
     std::array<uint32_t, 128> pending{};
     size_t pendingCount = 1;
@@ -722,6 +737,9 @@ std::optional<PaintHit> PaintSurface::raycast(const V3& origin, const V3& direct
             double distance = ac.dot(q) * inverse;
             if (distance < 1e-8 || distance > maxDistance)
                 continue;
+            closestDistance = std::min(closestDistance, distance);
+            maxDistance = std::min(requestedMaxDistance,
+                                   closestDistance + 1e-10 * std::max(1., closestDistance));
             PaintHit candidate;
             candidate.primitive = primitive;
             candidate.mesh = face.mesh;
@@ -735,11 +753,23 @@ std::optional<PaintHit> PaintSurface::raycast(const V3& origin, const V3& direct
                 candidate.normal.normalize();
             else
                 candidate.normal = face.normal();
+            // Exported two-sided sheets can contain coincident triangles with separate vertices
+            // and opposite normals. Select the facing twin deterministically instead of letting
+            // BVH order choose a culled backface whose preview primitive would never be drawn.
+            // The tolerance is a few nanometres at aircraft viewing distances, never the brush's
+            // much larger occlusion bias, and cannot extend the caller's hard ray limit.
+            const double tieTolerance = 1e-10 * std::max(1., distance);
+            if (hit && std::abs(distance - hit->distance) <= tieTolerance) {
+                const double facing = -candidate.normal.dot(ray), previous = -hit->normal.dot(ray);
+                if (facing < previous - 1e-12 ||
+                    (std::abs(facing - previous) <= 1e-12 && primitive >= hit->primitive))
+                    continue;
+            } else if (hit && distance > hit->distance)
+                continue;
             for (int axis = 0; axis < 2; ++axis)
                 candidate.uv[axis] =
                     float(face.uv[0][axis] * (1 - u - v) + face.uv[1][axis] * u + face.uv[2][axis] * v);
             hit = candidate;
-            maxDistance = distance;
         }
     }
     return hit;

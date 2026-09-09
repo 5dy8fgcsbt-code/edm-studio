@@ -1,4 +1,5 @@
 #include "paint_decal.h"
+#include "paint_conform.h"
 
 namespace edm {
 namespace {
@@ -24,10 +25,12 @@ void checkWork(Clock::time_point started, const PaintMappingLimits& limits, cons
         throw std::runtime_error("Surface decal time budget exceeded; reduce decal size");
 }
 std::optional<DecalFootprint> clippedFootprint(const PaintTriangle& triangle, const SurfaceDecalFrame& frame,
-                                               bool frontFacesOnly) {
+                                               bool frontFacesOnly,
+                                               const SurfaceDecalPatchTriangle* chart = nullptr,
+                                               const std::optional<V3>& eye = {}) {
     if (!triangle.hasUV)
         return {};
-    if (frontFacesOnly && std::none_of(triangle.normals.begin(), triangle.normals.end(),
+    if (!chart && frontFacesOnly && std::none_of(triangle.normals.begin(), triangle.normals.end(),
                                        [&](const V3& n) { return n.dot(frame.normal) > 0; }))
         return {};
     for (const auto& uv : triangle.uv)
@@ -41,7 +44,8 @@ std::optional<DecalFootprint> clippedFootprint(const PaintTriangle& triangle, co
     std::array<V3, 3> local;
     for (size_t i = 0; i < 3; ++i) {
         V3 delta = triangle.world[i] - frame.center;
-        local[i] = V3(delta.dot(frame.right), delta.dot(frame.up), delta.dot(frame.normal));
+        local[i] = chart ? V3(chart->coordinates[i].x(), chart->coordinates[i].y(), 0)
+                         : V3(delta.dot(frame.right), delta.dot(frame.up), delta.dot(frame.normal));
         if (!local[i].allFinite())
             throw std::runtime_error("Surface decal encountered non-finite world coordinates");
     }
@@ -91,7 +95,9 @@ std::optional<DecalFootprint> clippedFootprint(const PaintTriangle& triangle, co
     if (!count)
         return {};
     DecalFootprint footprint{{1e100, 1e100, -1e100, -1e100},
-                             (local[0].z() + local[1].z() + local[2].z()) / 3};
+                             chart && eye ? -((*eye - (triangle.world[0] + triangle.world[1] +
+                                                                    triangle.world[2]) / 3).squaredNorm())
+                                          : (local[0].z() + local[1].z() + local[2].z()) / 3};
     for (size_t i = 0; i < count; ++i)
         for (int axis = 0; axis < 2; ++axis) {
             double uv = 0;
@@ -113,7 +119,11 @@ std::vector<uint32_t> candidatePrimitives(const PaintSurface& surface, const Sur
     std::vector<uint32_t> result;
     if (options.candidatePrimitives)
         result = *options.candidatePrimitives;
-    else {
+    else if (options.conformPatch) {
+        result.reserve(options.conformPatch->triangles.size());
+        for (const auto& triangle : options.conformPatch->triangles)
+            result.push_back(triangle.primitive);
+    } else {
         double radius = std::hypot(frame.width * .5, frame.height * .5, frame.depth);
         require(std::isfinite(radius), "Surface decal dimensions exceed world bounds");
         result = surface.querySphere(frame.center, radius,
@@ -125,6 +135,14 @@ std::vector<uint32_t> candidatePrimitives(const PaintSurface& surface, const Sur
         if (primitive >= surface.triangleCount())
             throw std::runtime_error("Surface decal candidate is outside the current posed surface");
     return result;
+}
+const SurfaceDecalPatchTriangle* patchTriangle(const SurfaceDecalOptions& options, uint32_t primitive) {
+    if (!options.conformPatch)
+        return nullptr;
+    const auto& triangles = options.conformPatch->triangles;
+    const auto found = std::lower_bound(triangles.begin(), triangles.end(), primitive,
+                                        [](const auto& triangle, uint32_t id) { return triangle.primitive < id; });
+    return found != triangles.end() && found->primitive == primitive ? &*found : nullptr;
 }
 double rayFront(const PaintSurface& surface, const SurfaceDecalFrame& frame) {
     const auto [lo, hi] = surface.bounds();
@@ -168,6 +186,7 @@ PaintMappingCandidates findDecalMaterials(const PaintSurface& surface, const Sur
     auto started = Clock::now();
     validateSelection(options);
     const auto frame = surfaceDecalFrame(options);
+    validateSurfaceDecalPatch(surface, options);
     checkWork(started, options.limits, cancel);
     PaintMappingCandidates result;
     if (options.opacity > 0) {
@@ -180,9 +199,12 @@ PaintMappingCandidates findDecalMaterials(const PaintSurface& surface, const Sur
             }
             ++result.examinedTriangles;
             auto triangle = surface.triangle(primitive);
+            const auto chart = patchTriangle(options, primitive);
+            if (options.conformPatch && !chart)
+                continue;
             if (!paint_mapping::targetTriangle(triangle, options.material, options.mesh,
                                                options.targetMaterials) ||
-                !clippedFootprint(triangle, frame, options.frontFacesOnly))
+                !clippedFootprint(triangle, frame, options.frontFacesOnly, chart, options.projectionEye))
                 continue;
             ++result.candidateTriangles;
             ++result.trianglesByMaterial[triangle.material];
@@ -206,6 +228,7 @@ PaintMappingReport applySurfaceDecal(const PaintSurface& surface, PaintCanvas& c
     validate(canvas, image, std::max(0, options.material), options.mesh, options.opacity, options.limits,
              options.externalStroke, options.targetMaterials);
     const auto frame = surfaceDecalFrame(options);
+    validateSurfaceDecalPatch(surface, options);
     Operation operation(canvas, "表面贴花", options.limits, std::move(progress), cancel,
                         options.externalStroke);
     if (options.opacity <= 0)
@@ -219,9 +242,13 @@ PaintMappingReport applySurfaceDecal(const PaintSurface& surface, PaintCanvas& c
     for (uint32_t primitive : primitives) {
         operation.check();
         auto triangle = surface.triangle(primitive);
+        const auto chart = patchTriangle(options, primitive);
+        if (options.conformPatch && !chart)
+            continue;
         if (!targetTriangle(triangle, options.material, options.mesh, options.targetMaterials))
             continue;
-        if (auto footprint = clippedFootprint(triangle, frame, options.frontFacesOnly))
+        if (auto footprint = clippedFootprint(triangle, frame, options.frontFacesOnly, chart,
+                                              options.projectionEye))
             selected.push_back({primitive, *footprint});
     }
     // Shared UVs cannot carry different artwork. Process the outward layer first deterministically;
@@ -230,10 +257,12 @@ PaintMappingReport applySurfaceDecal(const PaintSurface& surface, PaintCanvas& c
         return a.footprint.depth != b.footprint.depth ? a.footprint.depth > b.footprint.depth
                                                       : a.primitive < b.primitive;
     });
-    const double front = options.occlusion && !selected.empty() ? rayFront(surface, frame) : 0;
+    const double front = options.occlusion && !options.conformPatch && !selected.empty()
+                             ? rayFront(surface, frame) : 0;
     for (const auto& candidate : selected) {
         operation.check();
         const auto triangle = surface.triangle(candidate.primitive);
+        const auto chart = patchTriangle(options, candidate.primitive);
         ++operation.report.triangles;
         PaintRasterOptions raster;
         raster.cancel = cancel;
@@ -244,8 +273,12 @@ PaintMappingReport applySurfaceDecal(const PaintSurface& surface, PaintCanvas& c
             [&](int x, int y, const V3& barycentric) {
                 operation.sampleVisited();
                 const V3 point = position(triangle, barycentric), delta = point - frame.center;
-                const double dx = delta.dot(frame.right), dy = delta.dot(frame.up),
-                             dz = delta.dot(frame.normal);
+                const Eigen::Vector2d coordinate = chart ?
+                    Eigen::Vector2d(chart->coordinates[0] * barycentric.x() +
+                                    chart->coordinates[1] * barycentric.y() +
+                                    chart->coordinates[2] * barycentric.z()) :
+                    Eigen::Vector2d(delta.dot(frame.right), delta.dot(frame.up));
+                const double dx = coordinate.x(), dy = coordinate.y(), dz = chart ? 0 : delta.dot(frame.normal);
                 if (std::abs(dx) > frame.width * .5 || std::abs(dy) > frame.height * .5 ||
                     std::abs(dz) > frame.depth)
                     return;
@@ -254,14 +287,20 @@ PaintMappingReport applySurfaceDecal(const PaintSurface& surface, PaintCanvas& c
                     return;
                 V3 normal = triangle.normals[0] * barycentric.x() + triangle.normals[1] * barycentric.y() +
                             triangle.normals[2] * barycentric.z();
-                if (options.frontFacesOnly && normal.dot(frame.normal) <= 1e-8) {
+                if (chart)
+                    normal *= options.conformPatch->normalSign;
+                const V3 towardEye = chart && options.projectionEye ? V3(*options.projectionEye - point)
+                                                                   : frame.normal;
+                if (options.frontFacesOnly && normal.dot(towardEye) <= 1e-8) {
                     ++operation.report.backfaceSamples;
                     return;
                 }
                 if (options.occlusion) {
-                    const double distance = front - dz;
+                    const double distance = chart ? towardEye.norm() : front - dz;
                     operation.rayTest();
-                    if (surface.raycast(point + frame.normal * distance, -frame.normal, -1,
+                    const V3 origin = chart ? *options.projectionEye : V3(point + frame.normal * distance);
+                    const V3 direction = chart ? V3(-towardEye / std::max(distance, 1e-20)) : V3(-frame.normal);
+                    if (distance <= 1e-12 || surface.raycast(origin, direction, -1,
                                         distance - distanceBias(distance))) {
                         ++operation.report.occludedSamples;
                         return;

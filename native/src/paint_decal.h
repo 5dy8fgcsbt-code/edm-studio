@@ -2,6 +2,7 @@
 #include "paint_auto_mapping.h"
 
 namespace edm {
+struct SurfaceDecalPatch;
 struct SurfaceDecalOptions {
     int material = -1, mesh = -1;
     // Nonempty selects shared texture aliases as one union, with one blend per target texel.
@@ -16,6 +17,10 @@ struct SurfaceDecalOptions {
     float opacity = 1;
     bool preserveAlpha = true, frontFacesOnly = true, occlusion = true;
     bool externalStroke = false;
+    // Curved mapping is built once at placement, then shared by preview and every material bake.
+    std::shared_ptr<const SurfaceDecalPatch> conformPatch;
+    // Frozen placement eye for curved front-face and visibility tests. Planar mapping ignores it.
+    std::optional<V3> projectionEye;
     PaintMappingLimits limits;
 };
 

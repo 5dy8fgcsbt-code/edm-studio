@@ -110,4 +110,7 @@ if (ImGui::CollapsingHeader("涂装图层", ImGuiTreeNodeFlags_DefaultOpen)) {
         p.changeLayers(p.layerInfos, p.activeLayerId, 0, 0, true);
     paintHint("自动匹配模型表面的贴图。");
     gap();
+} else {
+    ImGui::TextDisabled("当前图层：%s", p.layerNameDraft.c_str());
+    gap();
 }
