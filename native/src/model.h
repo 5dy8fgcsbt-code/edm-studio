@@ -73,6 +73,8 @@ struct RawRender {
     Json props = Json::object();
     std::vector<Parent> parents;
     std::vector<int> bones;
+    // ShellNode owns its vertex layout independently of the model's appearance materials.
+    std::vector<int> shellFormat;
     uint32_t vertexCount = 0, stride = 0;
     std::span<const uint8_t> vertices;
     std::vector<uint32_t> indices;
@@ -94,9 +96,9 @@ struct Document {
     std::shared_ptr<MappedFile> file;
     std::vector<Material> materials;
     std::vector<RawNode> nodes, connectors;
-    std::vector<RawRender> renders;
+    std::vector<RawRender> renders, collisionShells;
     Json rootProps, extraItems, renderTypes = Json::object();
-    int collisionCount = 0, lightCount = 0;
+    int collisionCount = 0, collisionLineCount = 0, lightCount = 0;
 };
 Document parseEdm(const fs::path& path, Progress progress = {}, const std::atomic_bool* cancel = nullptr);
 struct Node {
@@ -170,6 +172,7 @@ struct Scene {
     std::vector<Mat> evaluate(const Args& args, bool attachmentsVisible = true) const;
     std::vector<F3> transformed(const Mesh& mesh, const std::vector<Mat>& world) const;
     Json summary() const;
+    bool collisionOnly() const;
     void warn(std::string message) {
         if (std::find(warnings.begin(), warnings.end(), message) == warnings.end())
             warnings.push_back(std::move(message));

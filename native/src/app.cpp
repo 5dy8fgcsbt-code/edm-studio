@@ -421,14 +421,17 @@ class App {
                     if (names.size() < 500 && names.find(name) == std::string::npos)
                         names += name + "\n";
                 }
-                notice = "模型已载入 · " + std::to_string(scene.meshes.size()) + " 个网格";
+                notice = (scene.collisionOnly() ? "碰撞模型已载入 · " : "模型已载入 · ") +
+                         std::to_string(scene.meshes.size()) + " 个网格";
                 record(scene.summary().dump(2));
                 applyInitialArguments();
                 if (!paintMaterial.empty() || !autoPaintDirectory.empty() || !decalTestDirectory.empty())
                     rightTab = 3;
+                else if (scene.collisionOnly())
+                    rightTab = 2;
                 startAnalysis();
                 startTextures();
-                if (!noAutoScan)
+                if (!noAutoScan && !scene.collisionOnly())
                     scan();
                 if (!initialLivery.empty())
                     selectLivery(initialLivery);
@@ -615,7 +618,9 @@ class App {
             reuseExisting ? renderer.textures.images : std::map<std::string, std::shared_ptr<GpuTexture>>{};
         if (!reuseExisting)
             renderer.textures = {};
-        if (noTextures || !renderer.model) {
+        if (noTextures || !renderer.model || renderer.model->scene->collisionOnly()) {
+            if (renderer.model && renderer.model->scene->collisionOnly())
+                renderer.textures = {};
             stream.reset();
             return;
         }
@@ -930,7 +935,7 @@ class App {
                 exportFormat = i;
         ExportOptions options;
         options.duration = duration;
-        options.textures = exportTextures;
+        options.textures = exportTextures && !renderer.model->scene->collisionOnly();
         options.textureDirectory = textureDir;
         options.livery = livery;
         options.baseline = args;
@@ -1119,6 +1124,13 @@ class App {
         ImGui::EndChild();
     }
     void liveryPanel() {
+        if (renderer.model && renderer.model->scene->collisionOnly()) {
+            title("碰撞模型", "壳体几何与参数动画");
+            mutedText("颜色用于区分碰撞壳体。\n该模型不含可绘制的涂装 UV，\n无需加载涂装或贴图。");
+            space();
+            mutedText("可在左侧调节动画参数，\n勾选下方“线框”查看结构，\n或导出为通用模型文件。");
+            return;
+        }
         title("外观与涂装", "自动发现本体与保存的游戏目录");
         ImGui::SetNextItemWidth(-1);
         if (ImGui::BeginCombo("##livery", livery ? livery->name.c_str() : "模型默认贴图")) {
@@ -1242,7 +1254,11 @@ class App {
         if (ImGui::InputFloat("##duration", &duration, .5f, 1.f, "%.1f 秒"))
             duration = std::clamp(duration, .1f, 120.f);
         ImGui::EndDisabled();
-        ImGui::Checkbox("导出贴图与当前涂装", &exportTextures);
+        const bool collision = renderer.model && renderer.model->scene->collisionOnly();
+        if (collision)
+            mutedText("碰撞壳体按几何与参数动画导出，\n不附加涂装贴图。");
+        else
+            ImGui::Checkbox("导出贴图与当前涂装", &exportTextures);
         space(12);
         ImGui::BeginDisabled(!renderer.model || exporting);
         if (primary(exporting ? "正在导出…" : staticObj ? "导出当前姿态" : "导出模型与动画", {-1, 44}))
@@ -1253,14 +1269,15 @@ class App {
             notice = "正在停止导出…";
         }
         space(8);
-        if (ImGui::Button("指定额外贴图目录", {-1, 36})) {
+        if (!collision && ImGui::Button("指定额外贴图目录", {-1, 36})) {
             if (auto p = dialog(hwnd, false, true, L"选择贴图目录")) {
                 textureDir = *p;
                 saveSettings();
                 startTextures();
             }
         }
-        mutedText(textureDir.empty() ? "使用模型、模块和涂装目录自动匹配。" : pathString(textureDir));
+        if (!collision)
+            mutedText(textureDir.empty() ? "使用模型、模块和涂装目录自动匹配。" : pathString(textureDir));
         space(12);
         ImGui::Separator();
         space(12);
@@ -1272,7 +1289,7 @@ class App {
             space();
             mutedText("保留蒙皮与可见性。\n动态编号转为离散动画。\n各软件对材质的显示可能不同。");
         }
-        if (exportFormat == 3) {
+        if (exportFormat == 3 && !collision) {
             space();
             mutedText("FBX 嵌入颜色与透明贴图。\nRoughMet 作为资源保留，\n导入后可能需要手动连接。");
         }
@@ -1283,6 +1300,11 @@ class App {
             auto& s = *renderer.model->scene;
             auto stats = s.summary();
             ImGui::TextWrapped("%s", pathString(currentPath.filename()).c_str());
+            if (s.collisionOnly()) {
+                space();
+                ImGui::TextColored(accent, "碰撞模型");
+                mutedText("保留壳体结构与父节点动画。\n颜色仅用于区分壳体，无涂装 UV。");
+            }
             space();
             for (auto [label, key] :
                  std::vector<std::pair<const char*, const char*>>{{"网格", "export_meshes"},
@@ -1293,6 +1315,11 @@ class App {
                 mutedText(label);
                 ImGui::SameLine(130);
                 ImGui::TextUnformatted(compactNumber(stats[key].get<size_t>()).c_str());
+            }
+            if (s.collisionCount) {
+                mutedText("碰撞壳体");
+                ImGui::SameLine(130);
+                ImGui::Text("%d", s.collisionCount);
             }
             space();
             ImGui::Text("模型准备  %.2f 秒", loadSeconds);
@@ -1538,6 +1565,9 @@ class App {
                           compactNumber(renderer.visibleTriangles).c_str(),
                           renderer.model->scene->meshes.size());
             overlay->AddText({origin.x + 16, origin.y + 14}, IM_COL32(151, 178, 211, 230), stats);
+            if (renderer.model->scene->collisionOnly())
+                overlay->AddText({origin.x + 16, origin.y + 36}, IM_COL32(111, 192, 224, 235),
+                                 "碰撞壳体 · 可查看参数动画与导出几何");
             std::string help = renderer.options.connectors ? "点击空挂点加载 EDM · 点击黄色挂点显示卸载按钮"
                                : paint.active() && renderer.options.editedLivery
                                    ? "按位置自动绘制 · 右键旋转 · 中键平移"

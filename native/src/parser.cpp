@@ -266,6 +266,8 @@ class Parser {
         auto fmt = get<uint8_t>();
         auto n = count();
         get<uint32_t>();
+        if (r.type == "ShellNode")
+            require(fmt <= 2, "Unsupported collision index format");
         if (!n)
             return;
         require(fmt <= 2, "Unsupported EDM index format");
@@ -283,9 +285,27 @@ class Parser {
         r.type = t;
         base(r);
         if (t == "ShellNode") {
-            get<uint32_t>();
-            format();
+            r.parents.push_back({get<int32_t>(), 0, -1});
+            r.shellFormat = format();
             geometry(r);
+            require(r.parents[0].node >= -1 && r.parents[0].node < int(d.nodes.size()),
+                    "Invalid collision shell parent: " + r.name);
+            const size_t stride = std::accumulate(r.shellFormat.begin(), r.shellFormat.end(), size_t(0));
+            require(!r.shellFormat.empty() && r.shellFormat[0] >= 3 && stride == r.stride,
+                    "Invalid collision shell vertex format: " + r.name);
+            require(r.indices.size() % 3 == 0 &&
+                        (r.indices.empty() ||
+                         *std::max_element(r.indices.begin(), r.indices.end()) < r.vertexCount),
+                    "Invalid collision shell triangle indices: " + r.name);
+            // Validate even unused vertices and hidden shells. These layouts contain float
+            // geometry fields, rather than the packed bone-index words used by SkinNode.
+            for (uint32_t vertex = 0; vertex < r.vertexCount; ++vertex) {
+                if (!(vertex % 16384))
+                    check();
+                for (uint32_t component = 0; component < r.stride; ++component)
+                    require(std::isfinite(r.value(vertex, int(component))),
+                            "Nonfinite collision shell vertex: " + r.name);
+            }
             return r;
         }
         get<uint32_t>();
@@ -374,12 +394,17 @@ class Parser {
                     d.renderTypes[t] = d.renderTypes.value(t, 0) + 1;
                 if (t == "RenderNode" || t == "SkinNode" || t == "NumberNode" || t == "ShellNode") {
                     auto r = render(t);
-                    if (name == "RENDER_NODES")
+                    if (t == "ShellNode") {
+                        ++d.collisionCount;
+                        d.collisionShells.push_back(std::move(r));
+                    } else if (name == "RENDER_NODES")
                         d.renders.push_back(std::move(r));
                     else if (name == "SHELL_NODES")
                         d.collisionCount++;
                 } else {
                     auto a = node(t);
+                    if (name == "SHELL_NODES" && t == "SegmentsNode")
+                        ++d.collisionLineCount;
                     if (name == "CONNECTORS")
                         d.connectors.push_back(std::move(a));
                     else if (name == "LIGHT_NODES" || name == "RENDER_NODES")

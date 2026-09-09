@@ -234,6 +234,12 @@ struct Build {
                     {"edm_parent", p},
                     {"edm_damage_argument", parent ? parent->damage : -1},
                     {"edm_properties", r.props}};
+        if (r.type == "ShellNode") {
+            m.extras["edm_is_collision"] = true;
+            m.extras["edm_shell_name"] = r.name;
+            m.extras["edm_shell_index"] = ri;
+            m.extras["edm_shell_vertex_format"] = r.shellFormat;
+        }
         if (!m.numbers.empty()) {
             Json controls = Json::array();
             for (auto& c : m.numbers) {
@@ -411,9 +417,50 @@ struct Build {
                 progress("构建网格 " + std::to_string(ri + 1) + " / " + std::to_string(d.renders.size()));
         }
     }
+    void collisionMeshes() {
+        if (!s.meshes.empty() || d.collisionShells.empty())
+            return;
+        // A collision-only EDM may still declare unused appearance materials. Its
+        // shells have independent layouts and no source livery to paint or resolve.
+        s.materials.clear();
+        constexpr std::array<F3, 5> colors{{{.48f, .65f, .76f},
+                                            {.58f, .72f, .71f},
+                                            {.66f, .70f, .79f},
+                                            {.69f, .72f, .66f},
+                                            {.59f, .67f, .77f}}};
+        for (int index = 0; index < int(d.collisionShells.size()); ++index) {
+            if (cancel && *cancel)
+                throw std::runtime_error("Cancelled");
+            auto& shell = d.collisionShells[index];
+            if (shell.indices.empty())
+                continue;
+            Material material;
+            material.name = "Collision / " + (shell.name.empty() ? std::to_string(index) : shell.name);
+            material.source = s.source;
+            material.shader = "edm_collision";
+            material.culling = 1; // Double-sided in both the native renderer and glTF exporter.
+            material.format = shell.shellFormat;
+            material.uniforms = {{"diffuseColor", colors[size_t(index) % colors.size()]},
+                                 {"opacityValue", 1.}};
+            material.extras = {{"edm_is_collision", true},
+                               {"edm_shell_name", shell.name},
+                               {"edm_shell_index", index},
+                               {"edm_properties", shell.props},
+                               {"edm_shell_vertex_format", shell.shellFormat}};
+            shell.material = int(s.materials.size());
+            s.materials.push_back(std::move(material));
+            mesh(shell, s.materials.back(), index, 0, 1, &shell.parents.at(0), shell.indices);
+            // Some shells carry extra channels; a collision surface still has no paintable UV map.
+            s.meshes.back().uvs.clear();
+            if (progress && !(index % 50))
+                progress("构建碰撞壳体 " + std::to_string(index + 1) + " / " +
+                         std::to_string(d.collisionShells.size()));
+        }
+    }
     void run() {
         nodes();
         meshes();
+        collisionMeshes();
         for (auto& c : d.connectors) {
             require(c.parent >= -1 && c.parent < int(s.tails.size()), "Invalid connector");
             add(c.name.empty() ? "Connector" : c.name, c.parent >= 0 ? s.tails[c.parent] : 0,
@@ -459,9 +506,11 @@ struct Build {
         }
         require(s.order.size() == s.nodes.size(), "Scene graph cycle");
         s.defaultWorld = s.evaluate({});
-        require(!s.meshes.empty(), "文件没有可导出的三角网格");
-        if (d.collisionCount)
+        require(!s.meshes.empty(), "文件没有可导出的三角网格（外观与碰撞壳体均无三角形）");
+        if (d.collisionCount && !s.collisionOnly())
             s.warn("碰撞壳体未加入可见模型。");
+        if (d.collisionLineCount)
+            s.warn("另有 " + std::to_string(d.collisionLineCount) + " 组碰撞线段，当前未显示或导出。");
         if (d.lightCount)
             s.warn("DCS 专用灯光效果未转换。");
         for (auto& m : s.materials)
@@ -529,13 +578,22 @@ std::vector<F3> Scene::transformed(const Mesh& m, const std::vector<Mat>& world)
     }
     return result;
 }
+bool Scene::collisionOnly() const {
+    return !meshes.empty() && std::all_of(meshes.begin(), meshes.end(), [](const Mesh& mesh) {
+        return mesh.extras.is_object() && mesh.extras.value("edm_is_collision", false);
+    });
+}
 Json Scene::summary() const {
-    size_t tris = 0, vertices = 0, skins = 0, winding = 0;
+    size_t tris = 0, vertices = 0, skins = 0, winding = 0, collisionMeshes = 0, collisionTris = 0;
     for (auto& m : meshes) {
         tris += m.indices.size() / 3;
         vertices += m.positions.size();
         skins += m.skinned();
         winding += m.extras.value("edm_winding_reversed", false);
+        if (m.extras.value("edm_is_collision", false)) {
+            ++collisionMeshes;
+            collisionTris += m.indices.size() / 3;
+        }
     }
     Json args = Json::object();
     for (auto [a, r] : limits)
@@ -575,6 +633,9 @@ Json Scene::summary() const {
         {"connectors", connectorCount},
         {"attachments", attached},
         {"collision_nodes", collisionCount},
+        {"collision_model", collisionOnly()},
+        {"collision_meshes", collisionMeshes},
+        {"collision_triangles", collisionTris},
         {"warnings", warnings},
         {"parse_seconds", parseSeconds},
         {"scene_build_seconds", buildSeconds},

@@ -937,6 +937,12 @@ void PaintEditor::tick(Renderer& renderer, const Args& args) {
     auto& p = *impl;
     p.poll();
     p.currentArgs = args;
+    if (p.scene && p.scene->collisionOnly() && !busy()) {
+        p.tool = 0;
+        p.decalHit.reset();
+        p.projectionDragging = false;
+        renderer.decalPreview = {};
+    }
     if (p.attachmentsVisible != renderer.options.attachments && !busy())
         invalidateSurface(renderer);
     if (p.decalHit && p.decalPose != args)

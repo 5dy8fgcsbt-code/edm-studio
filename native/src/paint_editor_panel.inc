@@ -1,6 +1,13 @@
 // Included inside namespace edm, after PaintEditor::Impl and the panel helper definitions.
 void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
     auto& p = *impl;
+    if (p.scene && p.scene->collisionOnly()) {
+        ImGui::TextUnformatted("碰撞模型");
+        paintHint("碰撞壳体不含涂装 UV，无法直接使用画笔、贴花或相机投影绘制。");
+        ImGui::Dummy({0, 8});
+        paintHint("可以在左侧调节参数动画，或在“导出”中保存为 GLB、glTF、OBJ、FBX。");
+        return;
+    }
     const ImVec4 blue{.20f, .44f, .76f, 1}, quiet{.12f, .16f, .21f, 1};
     const auto gap = [] { ImGui::Dummy({0, 5}); };
     const auto primaryButton = [&](const char* label, float height = 35) {
