@@ -289,7 +289,10 @@ Json exportObjScene(const Scene& scene, const fs::path& path, const ExportOption
     cancelled(cancel);
     require(lower(pathString(path.extension())) == ".obj", "OBJ output must have .obj extension");
     validateScene(scene, cancel);
-    Args baseline = options.livery ? options.livery->args : Args{};
+    Args baseline = scene.defaultArgs;
+    if (options.livery)
+        for (auto [argument, value] : options.livery->args)
+            baseline[argument] = value;
     for (auto [arg, value] : options.baseline)
         baseline[arg] = value;
     for (auto [arg, value] : baseline)

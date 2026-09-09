@@ -1,6 +1,7 @@
 #include "paint_document.h"
 #include <iomanip>
 #include <sstream>
+#include <wincodec.h>
 
 namespace edm {
 namespace {
@@ -71,6 +72,14 @@ std::string sceneFingerprint(const Scene& scene, const std::atomic_bool* cancel)
             fingerprint.text(std::to_string(uv.size()));
             fingerprint.bytes(uv.data(), uv.size() * sizeof(F2));
         }
+    }
+    if (!scene.attachments.empty()) {
+        auto assembly = paintAssemblyMetadata(scene);
+        // Moving the same set of EDM files must not invalidate the painting project.
+        for (auto& attachment : assembly["attachments"])
+            attachment.erase("source");
+        assembly.erase("default_args");
+        fingerprint.text(assembly.dump());
     }
     return fingerprint.string();
 }
@@ -170,8 +179,8 @@ struct Staging {
 };
 Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& directory, const std::string& name,
           std::shared_ptr<Livery> livery, const fs::path& textureDirectory, Progress progress,
-          const std::atomic_bool* cancel, bool recovery) {
-    require(!images.empty(), "尚无可保存的绘制材质");
+          const std::atomic_bool* cancel, bool recovery, bool assetsOnly = false) {
+    require(assetsOnly || !images.empty(), "尚无可保存的绘制材质");
     require(!directory.empty(), "请选择保存目录");
     cancelled(cancel);
     std::map<std::string, std::vector<int>> groups;
@@ -206,7 +215,10 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
                      {"textures", Json::array()},
                      {"dependencies", Json::array()},
                      {"warnings", Json::array()},
+                     {"assembly", paintAssemblyMetadata(scene)},
+                     {"evaluated_appearance", appearanceSnapshot(livery, textureDirectory)},
                      {"self_contained", !recovery},
+                     {"assets_only", assetsOnly && images.empty()},
                      {"recovery_only", recovery}};
     if (recovery)
         manifest["appearance"] = appearanceSnapshot(livery, textureDirectory);
@@ -219,11 +231,27 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
     GetLocalTime(&now);
     char stamp[96];
     std::snprintf(stamp, sizeof(stamp), "%s-%04u%02u%02u-%02u%02u%02u-%03u-%lu",
-                  recovery ? "EDM-Recovery" : "EDM-Paint", now.wYear, now.wMonth, now.wDay, now.wHour,
-                  now.wMinute, now.wSecond, now.wMilliseconds, GetCurrentProcessId());
+                  recovery     ? "EDM-Recovery"
+                  : assetsOnly ? "EDM-Livery"
+                               : "EDM-Paint",
+                  now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds,
+                  GetCurrentProcessId());
     Staging staging;
+    std::string exportPrefix;
+    if (assetsOnly) {
+        exportPrefix = name;
+        for (char& c : exportPrefix)
+            if (static_cast<unsigned char>(c) < 32 ||
+                std::string_view("<>:\"/\\|?*").find(c) != std::string_view::npos)
+                c = '_';
+        // Keep room for timestamp and DDS filenames below the Windows component limit.
+        if (exportPrefix.size() > 96)
+            exportPrefix.clear();
+        if (!exportPrefix.empty())
+            exportPrefix += '-';
+    }
     for (size_t suffix = 0;; ++suffix) {
-        std::string leaf = stamp + (suffix ? "-" + std::to_string(suffix) : std::string());
+        std::string leaf = exportPrefix + stamp + (suffix ? "-" + std::to_string(suffix) : std::string());
         staging.final = parent / wide(leaf);
         staging.directory = parent / wide(leaf + ".partial");
         if (fs::exists(staging.final))
@@ -254,10 +282,26 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
             progress("保存涂装材质 " + std::to_string(++completed) + " / " + std::to_string(groups.size()));
         cancelled(cancel);
         const auto& mat = scene.materials[members.front()];
+        std::set<std::pair<std::string, int>> owners;
+        for (int member : members) {
+            const auto& material = scene.materials[member];
+            owners.emplace(lower(pathString(material.source.empty() ? scene.source : material.source)),
+                           material.extras.value("edm_attachment", -1));
+        }
+        const bool crossModel = owners.size() > 1;
         if (!recovery && !meaningful(mat.name))
             continue;
         auto edited = groupImages.find(key);
         if (edited != groupImages.end()) {
+            if (!recovery && crossModel)
+                for (int member : members)
+                    if (!images.contains(member)) {
+                        const auto original = resolver->material(cleanMaterial(scene.materials[member]), 0);
+                        require(original && sameImage(PaintImage::load(*original), *edited->second),
+                                "主模型与外挂物体使用同名材质但绘制内容不同，单个 description.lua "
+                                "无法分别寻址：" +
+                                    mat.name + "。请统一这些同名材质的绘制内容。");
+                    }
             const std::string stem = "paint_" + std::to_string(members.front());
             edited->second->savePNG(staging.directory / (stem + ".png"));
             cancelled(cancel);
@@ -312,9 +356,15 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
                                      lower(explicitOverride->name) == "empty"
                                  ? std::optional<ImageSource>{ImageSource{{}, "", true}}
                                  : resolver->material(cleaned, slot);
-                if (!first &&
-                    (bool(source) != bool(found) || (source && found && source->key() != found->key())))
-                    ambiguous = true;
+                if (!first) {
+                    bool different = bool(source) != bool(found);
+                    if (source && found && source->key() != found->key()) {
+                        different = true;
+                        if (crossModel && source->empty == found->empty)
+                            different = !source->empty && source->bytes() != found->bytes();
+                    }
+                    ambiguous |= different;
+                }
                 if (first)
                     source = std::move(found);
                 first = false;
@@ -323,6 +373,10 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
             if (originalDiffuse)
                 original = {{"material", members.front()}, {"material_name", mat.name}};
             if (ambiguous) {
+                require(!crossModel,
+                        "主模型与外挂物体存在同名材质的不同贴图，单个 description.lua 无法分别寻址：" +
+                            mat.name + "，槽位 " + std::to_string(slot) +
+                            "。请更换使用不同材质名的模型或统一贴图。");
                 manifest["warnings"].push_back("同名材质 " + mat.name + " 的默认槽 " + std::to_string(slot) +
                                                " 不同；保留各自默认纹理，避免错误覆盖。");
                 manifest["self_contained"] = false;
@@ -409,11 +463,86 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
 }
 } // namespace
 
+Json paintAssemblyMetadata(const Scene& scene) {
+    Json attachments = Json::array(), defaults = Json::object();
+    for (const auto& attachment : scene.attachments) {
+        Json arguments = Json::object();
+        for (auto [original, merged] : attachment.argumentMap)
+            arguments[std::to_string(original)] = merged;
+        const auto name = [&](int node) {
+            return node >= 0 && node < int(scene.nodes.size()) ? scene.nodes[node].name : std::string();
+        };
+        attachments.push_back({{"source", pathString(attachment.source)},
+                               {"target_node", attachment.targetNode},
+                               {"target_name", name(attachment.targetNode)},
+                               {"root", attachment.root},
+                               {"attach_node", attachment.attachNode},
+                               {"attach_name", name(attachment.attachNode)},
+                               {"node_begin", attachment.nodeBegin},
+                               {"node_count", attachment.nodeCount},
+                               {"material_begin", attachment.materialBegin},
+                               {"material_count", attachment.materialCount},
+                               {"mesh_begin", attachment.meshBegin},
+                               {"mesh_count", attachment.meshCount},
+                               {"argument_map", arguments}});
+    }
+    for (auto [argument, value] : scene.defaultArgs)
+        defaults[std::to_string(argument)] = value;
+    return {{"version", 1}, {"attachments", attachments}, {"default_args", defaults}};
+}
+
 Json savePaintProject(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                       const std::string& name, std::shared_ptr<Livery> livery,
                       const fs::path& textureDirectory, Progress progress, const std::atomic_bool* cancel) {
     return save(scene, images, directory, name, std::move(livery), textureDirectory, std::move(progress),
                 cancel, false);
+}
+Json exportLiveryAssets(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
+                        const std::string& name, std::shared_ptr<Livery> livery,
+                        const fs::path& textureDirectory, Progress progress, const std::atomic_bool* cancel) {
+    return save(scene, images, directory, name, std::move(livery), textureDirectory, std::move(progress),
+                cancel, false, true);
+}
+Json exportLiveryAssetsFromPng(const Scene& scene, const std::map<int, std::vector<uint8_t>>& images,
+                               const fs::path& directory, const std::string& name,
+                               std::shared_ptr<Livery> livery, const fs::path& textureDirectory,
+                               Progress progress, const std::atomic_bool* cancel) {
+    ComApartment apartment;
+    PaintSnapshot decoded;
+    size_t expandedBytes = 0;
+    for (const auto& [material, bytes] : images) {
+        cancelled(cancel);
+        require(material >= 0 && material < int(scene.materials.size()), "导出绘制材质索引无效");
+        DirectX::TexMetadata metadata;
+        require(SUCCEEDED(DirectX::GetMetadataFromWICMemory(bytes.data(), bytes.size(),
+                                                            DirectX::WIC_FLAGS_NONE, metadata)),
+                "无法读取导出绘制图像");
+        require(metadata.width && metadata.height && metadata.width <= 8192 && metadata.height <= 8192,
+                "导出绘制图像单边不能超过 8192 像素");
+        const auto required = metadata.width * metadata.height * 4;
+        require(required <= 1024ull * 1024 * 1024 - expandedBytes, "导出绘制图像超过 1 GiB 编辑预算");
+        expandedBytes += required;
+        DirectX::ScratchImage loaded, converted;
+        require(SUCCEEDED(DirectX::LoadFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_FORCE_RGB,
+                                                     nullptr, loaded)),
+                "无法解码导出绘制图像");
+        const auto* pixels = loaded.GetImage(0, 0, 0);
+        require(pixels != nullptr, "导出绘制图像没有像素");
+        if (pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM &&
+            pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
+            require(SUCCEEDED(DirectX::Convert(*pixels, DXGI_FORMAT_R8G8B8A8_UNORM,
+                                               DirectX::TEX_FILTER_DEFAULT, 0, converted)),
+                    "无法转换导出绘制图像");
+            pixels = converted.GetImage(0, 0, 0);
+        }
+        auto image = std::make_shared<PaintImage>(uint32_t(pixels->width), uint32_t(pixels->height));
+        for (uint32_t y = 0; y < image->height; ++y)
+            std::memcpy(image->rgba.data() + size_t(y) * image->width * 4,
+                        pixels->pixels + y * pixels->rowPitch, size_t(image->width) * 4);
+        decoded.emplace(material, std::move(image));
+    }
+    return exportLiveryAssets(scene, decoded, directory, name, std::move(livery), textureDirectory,
+                              std::move(progress), cancel);
 }
 Json savePaintRecovery(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                        Progress progress, const std::atomic_bool* cancel, std::shared_ptr<Livery> livery,
@@ -616,6 +745,7 @@ PaintProjectDocument loadPaintDocument(const Scene& scene, const fs::path& proje
     cancelled(cancel);
     const auto manifest = Json::parse(readFile(project, 2000000));
     PaintProjectDocument document;
+    document.assembly = manifest.value("assembly", Json::object());
     document.images = loadImages(scene, project, manifest, cancel, options);
     appendWarnings(document, manifest.value("warnings", Json::array()));
     if (manifest.value("recovery_only", false)) {

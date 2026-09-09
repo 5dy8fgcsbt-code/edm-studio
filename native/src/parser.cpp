@@ -32,7 +32,9 @@ class Parser {
     }
     std::string literal() {
         auto b = take(count());
-        return utf8(wide(std::string_view((const char*)b.data(), b.size()), 1251));
+        // Newer DCS assets also use UTF-8 in EDM 8 literals. Keep valid UTF-8
+        // intact, with Windows-1251 as the fallback for legacy model strings.
+        return decodeText(b);
     }
     std::string str() {
         if (d.version == 8)
@@ -332,8 +334,7 @@ class Parser {
             size_t start = 0;
             for (size_t i = 0; i <= b.size(); i++)
                 if (i == b.size() || b[i] == 0) {
-                    strings.push_back(
-                        utf8(wide(std::string_view((const char*)b.data() + start, i - start), 1251)));
+                    strings.push_back(decodeText(b.subspan(start, i - start)));
                     start = i + 1;
                 }
         }

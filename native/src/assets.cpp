@@ -445,7 +445,7 @@ Catalog discoverLiveries(const fs::path& source, const std::vector<fs::path>& ex
 }
 TextureResolver::TextureResolver(const fs::path& path, const fs::path& extra,
                                  std::shared_ptr<Livery> selected)
-    : source(path), livery(selected) {
+    : source(path), extraDirectory(extra), livery(selected) {
     auto mod = modulePath(source);
     auto installs = installationPaths(source);
     if (!extra.empty())
@@ -593,6 +593,29 @@ std::optional<ImageSource> TextureResolver::localImage(const std::string& name) 
     return {};
 }
 std::optional<ImageSource> TextureResolver::material(const Material& mat, int slot) {
+    auto sourceKey = [](const fs::path& path) {
+        return lower(pathString(fs::absolute(path).lexically_normal()));
+    };
+    if (!mat.source.empty() && sourceKey(mat.source) != sourceKey(source)) {
+        auto& entry = sourceResolvers[sourceKey(mat.source)];
+        if (!entry.resolver) {
+            entry.resolver = std::make_unique<TextureResolver>(mat.source, extraDirectory, livery);
+            for (const auto& root : entry.resolver->roots)
+                if (std::find(roots.begin(), roots.end(), root) == roots.end())
+                    roots.push_back(root);
+        }
+        auto found = entry.resolver->material(mat, slot);
+        // Names alone are not unique after attaching another aircraft, rack, or weapon.
+        // Preserve the source in diagnostics as well as in the resolver's lookup scope.
+        const auto prefix = pathString(mat.source) + " :: ";
+        for (; entry.missingCount < entry.resolver->missing.size(); ++entry.missingCount)
+            missing.push_back(prefix + entry.resolver->missing[entry.missingCount]);
+        for (; entry.warningCount < entry.resolver->warnings.size(); ++entry.warningCount)
+            warnings.push_back(prefix + entry.resolver->warnings[entry.warningCount]);
+        for (auto it = entry.resolver->resolved.begin(); it != entry.resolver->resolved.end(); ++it)
+            resolved[prefix + it.key()] = it.value();
+        return found;
+    }
     const TextureOverride* over = nullptr;
     auto overrideAt = [&](int s) -> const TextureOverride* {
         if (!livery)

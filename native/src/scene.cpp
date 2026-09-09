@@ -480,6 +480,8 @@ std::shared_ptr<Scene> Scene::load(const fs::path& path, Progress progress, cons
     s->version = d.version;
     s->sourceNodes = int(d.nodes.size());
     s->materials = std::move(d.materials);
+    for (auto& material : s->materials)
+        material.source = path;
     s->collisionCount = d.collisionCount;
     s->connectorCount = int(d.connectors.size());
     s->renderTypes = d.renderTypes;
@@ -487,10 +489,10 @@ std::shared_ptr<Scene> Scene::load(const fs::path& path, Progress progress, cons
     s->buildSeconds = seconds(t);
     return s;
 }
-std::vector<Mat> Scene::evaluate(const Args& args) const {
+std::vector<Mat> Scene::evaluate(const Args& args, bool attachmentsVisible) const {
     auto world = staticLocal;
     for (auto& t : tracks) {
-        V4 v = t.sample(argValue(args, t.arg));
+        V4 v = t.sample(args.contains(t.arg) ? args.at(t.arg) : argValue(defaultArgs, t.arg));
         if (t.channel == Channel::Position)
             world[t.node] = translation(v.head<3>());
         else if (t.channel == Channel::Rotation)
@@ -498,6 +500,9 @@ std::vector<Mat> Scene::evaluate(const Args& args) const {
         else
             world[t.node] = scaling(v.head<3>());
     }
+    if (!attachmentsVisible)
+        for (const auto& attachment : attachments)
+            world.at(attachment.root) *= scaling(V3::Zero());
     for (int i : order) {
         int p = nodes[i].parent;
         if (p >= 0)
@@ -535,6 +540,23 @@ Json Scene::summary() const {
     Json args = Json::object();
     for (auto [a, r] : limits)
         args[std::to_string(a)] = {r.first, r.second};
+    Json attached = Json::array();
+    for (const auto& item : attachments) {
+        Json mapping = Json::object();
+        for (auto [original, remapped] : item.argumentMap)
+            mapping[std::to_string(original)] = remapped;
+        attached.push_back({{"source", pathString(item.source)},
+                            {"target_node", item.targetNode},
+                            {"root", item.root},
+                            {"attach_node", item.attachNode},
+                            {"node_begin", item.nodeBegin},
+                            {"node_count", item.nodeCount},
+                            {"material_begin", item.materialBegin},
+                            {"material_count", item.materialCount},
+                            {"mesh_begin", item.meshBegin},
+                            {"mesh_count", item.meshCount},
+                            {"argument_map", mapping}});
+    }
     return {
         {"source", pathString(source)},
         {"edm_version", version},
@@ -551,6 +573,7 @@ Json Scene::summary() const {
         {"number_arguments", numberArgs},
         {"winding_normalized_meshes", winding},
         {"connectors", connectorCount},
+        {"attachments", attached},
         {"collision_nodes", collisionCount},
         {"warnings", warnings},
         {"parse_seconds", parseSeconds},

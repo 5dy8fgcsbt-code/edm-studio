@@ -1,4 +1,5 @@
 #include "export_internal.h"
+#include "paint_document.h"
 #include <iomanip>
 #include <sstream>
 namespace edm {
@@ -127,7 +128,10 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
     arguments.erase(std::unique(arguments.begin(), arguments.end()), arguments.end());
     for (int a : arguments)
         require(scene.limits.contains(a), "Unknown export argument");
-    Args baseline = options.livery ? options.livery->args : Args{};
+    Args baseline = scene.defaultArgs;
+    if (options.livery)
+        for (auto [argument, value] : options.livery->args)
+            baseline[argument] = value;
     for (auto [a, v] : options.baseline) {
         require(a >= 0 && std::isfinite(v), "Invalid baseline argument");
         baseline[a] = v;
@@ -534,8 +538,8 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
     check();
     return {std::move(d), std::move(b.data), std::move(report)};
 }
-Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& options, Progress progress,
-                 const std::atomic_bool* cancel) {
+static Json exportModelScene(const Scene& scene, const fs::path& path, const ExportOptions& options,
+                             Progress progress, const std::atomic_bool* cancel) {
     auto extension = lower(pathString(path.extension()));
     if (extension == ".obj")
         return exportObjScene(scene, path, options, std::move(progress), cancel);
@@ -574,5 +578,42 @@ Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& 
     reportPath.replace_extension(L".report.json");
     writeJson(reportPath, payload.report);
     return payload.report;
+}
+Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& options, Progress progress,
+                 const std::atomic_bool* cancel) {
+    const auto extension = lower(pathString(path.extension()));
+    require(extension == ".glb" || extension == ".gltf" || extension == ".obj" || extension == ".fbx",
+            "Export format must be .glb, .gltf, .obj or .fbx");
+    Json assets;
+    // Resolve DCS material-name conflicts before publishing a model. The original-format DDS
+    // sidecar is intentionally independent of the PNG resources used by interchange formats.
+    if (!scene.attachments.empty() && options.textures)
+        assets = exportLiveryAssetsFromPng(scene, options.diffuseOverrides, fs::absolute(path).parent_path(),
+                                           pathString(path.stem()), options.livery, options.textureDirectory,
+                                           progress, cancel);
+    const auto assetsDirectory = assets.is_null() ? std::string() : assets.at("directory").get<std::string>();
+    bool modelWritten = false;
+    try {
+        auto report = exportModelScene(scene, path, options, progress, cancel);
+        modelWritten = true;
+        if (!assets.is_null()) {
+            report["livery_assets_directory"] = assets.at("directory");
+            report["description_lua"] =
+                pathString(fs::path(wide(assets.at("directory").get<std::string>())) / "description.lua");
+            report["livery_assets"] = std::move(assets);
+            auto reportPath = path;
+            reportPath.replace_extension(L".report.json");
+            report["report_path"] = pathString(reportPath);
+            writeJson(reportPath, report);
+        }
+        return report;
+    } catch (...) {
+        if (!assetsDirectory.empty())
+            throw std::runtime_error(exceptionText() +
+                                     (modelWritten ? "\n模型已导出，但报告写入失败；涂装依赖保存在："
+                                                   : "\n模型导出未完成；涂装依赖已单独保存至：") +
+                                     assetsDirectory);
+        throw;
+    }
 }
 } // namespace edm

@@ -89,7 +89,8 @@ struct PaintUVInfo {
     }
 };
 
-// A reusable BVH over the current animated pose. Rebuild only after changing model/arguments;
+// A reusable BVH over the current animated pose. Rebuild after changing model, arguments, or
+// attachment visibility. Hidden attachments are excluded from both painting and occlusion;
 // camera motion, brush strokes and texture changes do not rebuild it.
 class PaintSurface {
     struct Impl;
@@ -97,7 +98,7 @@ class PaintSurface {
 
   public:
     PaintSurface(std::shared_ptr<const Scene> scene, const Args& args = {}, Progress progress = {},
-                 const std::atomic_bool* cancel = nullptr);
+                 const std::atomic_bool* cancel = nullptr, bool attachmentsVisible = true);
     ~PaintSurface();
     PaintSurface(PaintSurface&&) noexcept;
     PaintSurface& operator=(PaintSurface&&) noexcept;

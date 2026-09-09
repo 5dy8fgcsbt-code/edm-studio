@@ -518,15 +518,19 @@ struct PaintSurface::Impl {
     }
 };
 PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args, Progress progress,
-                           const std::atomic_bool* cancel)
+                           const std::atomic_bool* cancel, bool attachmentsVisible)
     : impl(std::make_unique<Impl>()) {
     require(scene != nullptr, "Painting requires a loaded scene");
     impl->scene = std::move(scene);
-    auto world = impl->scene->evaluate(args);
+    auto world = impl->scene->evaluate(args, attachmentsVisible);
+    auto effectiveArgs = impl->scene->defaultArgs;
+    for (const auto& [argument, value] : args)
+        effectiveArgs[argument] = value;
     impl->cache.resize(impl->scene->meshes.size());
     size_t possible = 0;
     for (const auto& mesh : impl->scene->meshes)
-        possible += mesh.indices.size() / 3;
+        if (attachmentsVisible || !mesh.extras.contains("edm_attachment"))
+            possible += mesh.indices.size() / 3;
     require(possible <= std::numeric_limits<uint32_t>::max(), "Paint geometry exceeds index range");
     impl->primitives.reserve(possible);
     impl->centers.reserve(possible);
@@ -535,6 +539,10 @@ PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args,
     for (uint32_t mi = 0; mi < impl->scene->meshes.size(); ++mi) {
         cancelled(cancel);
         const auto& mesh = impl->scene->meshes[mi];
+        // Visibility is an explicit geometric exclusion, not just a zero-scale transform.
+        // In particular, skin bones can otherwise leave pickable geometry outside a hidden root.
+        if (!attachmentsVisible && mesh.extras.contains("edm_attachment"))
+            continue;
         auto& cache = impl->cache[mi];
         require(mesh.material >= 0 && mesh.material < int(impl->scene->materials.size()),
                 "Invalid paint material index");
@@ -545,7 +553,7 @@ PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args,
             continue;
         cache.positions = impl->scene->transformed(mesh, world);
         cache.hasUV = !mesh.uvs.empty();
-        cache.uv = textureUV(mesh, impl->scene->materials[mesh.material], 0, args);
+        cache.uv = textureUV(mesh, impl->scene->materials[mesh.material], 0, effectiveArgs);
         cache.normals.resize(mesh.positions.size());
         std::vector<Eigen::Matrix3d> palette;
         if (mesh.skinned()) {

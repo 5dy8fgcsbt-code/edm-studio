@@ -46,10 +46,15 @@ Catalog discoverLiveries(const fs::path& source, const std::vector<fs::path>& ex
                          Progress progress = {}, const std::atomic_bool* cancel = nullptr);
 class TextureResolver {
     using Index = std::map<std::string, ImageSource>;
-    fs::path source;
+    fs::path source, extraDirectory;
     std::shared_ptr<Livery> livery;
     Index index, local;
     std::vector<fs::path> pending;
+    struct SourceResolver {
+        std::unique_ptr<TextureResolver> resolver;
+        size_t missingCount = 0, warningCount = 0;
+    };
+    std::map<std::string, SourceResolver> sourceResolvers;
     void put(Index& index, const std::string& name, const ImageSource& image);
     void archive(const fs::path& path, Index& into, const std::string& relative = "");
     void directory(const fs::path& path, Index& into, bool recursive = true);

@@ -13,6 +13,7 @@ struct PaintProjectDocument {
     // restoreAppearance=true and livery=nullptr explicitly restores the model's default appearance.
     std::shared_ptr<Livery> livery;
     fs::path textureDirectory;
+    Json assembly = Json::object(); // Sources, connector targets and argument maps for reattaching EDMs.
     std::vector<std::string> warnings;
 };
 // Saves a new, self-contained folder. Original game/livery/template files are never overwritten.
@@ -20,6 +21,17 @@ Json savePaintProject(const Scene& scene, const PaintSnapshot& images, const fs:
                       const std::string& name, std::shared_ptr<Livery> livery = {},
                       const fs::path& textureDirectory = {}, Progress progress = {},
                       const std::atomic_bool* cancel = nullptr);
+// Export a self-contained DCS livery even if no materials have been painted.
+// Both entries create a unique child directory; existing files are never overwritten.
+Json exportLiveryAssets(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
+                        const std::string& name, std::shared_ptr<Livery> livery = {},
+                        const fs::path& textureDirectory = {}, Progress progress = {},
+                        const std::atomic_bool* cancel = nullptr);
+Json exportLiveryAssetsFromPng(const Scene& scene, const std::map<int, std::vector<uint8_t>>& images,
+                               const fs::path& directory, const std::string& name,
+                               std::shared_ptr<Livery> livery = {}, const fs::path& textureDirectory = {},
+                               Progress progress = {}, const std::atomic_bool* cancel = nullptr);
+Json paintAssemblyMetadata(const Scene& scene);
 PaintSnapshot loadPaintProject(const Scene& scene, const fs::path& project,
                                const std::atomic_bool* cancel = nullptr,
                                const PaintLoadOptions& options = {});

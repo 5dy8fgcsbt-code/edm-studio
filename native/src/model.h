@@ -20,6 +20,7 @@ struct TextureRef {
 };
 struct Material {
     std::string name, shader;
+    fs::path source;
     int blending = 0, culling = 0, decal = 0;
     std::vector<int> format;
     std::vector<uint32_t> uvChannels;
@@ -140,6 +141,12 @@ struct Mesh {
         return positions.size() * sizeof(F3) * 2 + indices.size() * 4;
     }
 };
+struct SceneAttachment {
+    fs::path source;
+    int targetNode = -1, root = -1, attachNode = -1;
+    int nodeBegin = 0, nodeCount = 0, materialBegin = 0, materialCount = 0, meshBegin = 0, meshCount = 0;
+    std::map<int, int> argumentMap;
+};
 struct Scene {
     fs::path source;
     int version = 0, sourceNodes = 0, collisionCount = 0, connectorCount = 0;
@@ -148,6 +155,8 @@ struct Scene {
     std::vector<Node> nodes;
     std::vector<Mesh> meshes;
     std::vector<Track> tracks;
+    std::vector<SceneAttachment> attachments;
+    Args defaultArgs;
     std::map<int, std::pair<double, double>> limits;
     std::vector<int> numberArgs, order, heads, tails;
     std::vector<Mat> staticLocal, defaultWorld;
@@ -155,7 +164,7 @@ struct Scene {
     double parseSeconds = 0, buildSeconds = 0;
     static std::shared_ptr<Scene> load(const fs::path& path, Progress progress = {},
                                        const std::atomic_bool* cancel = nullptr);
-    std::vector<Mat> evaluate(const Args& args) const;
+    std::vector<Mat> evaluate(const Args& args, bool attachmentsVisible = true) const;
     std::vector<F3> transformed(const Mesh& mesh, const std::vector<Mat>& world) const;
     Json summary() const;
     void warn(std::string message) {
