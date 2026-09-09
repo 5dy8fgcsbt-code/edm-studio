@@ -2,6 +2,7 @@
 #include "export.h"
 #include "animation_analysis.h"
 #include "paint_editor.h"
+#include "attachment.h"
 #include "resource.h"
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -166,6 +167,15 @@ class App {
     std::vector<int> filteredArgs;
     std::map<int, std::string> argNames;
     bool cameraMoving = false;
+    bool attaching = false;
+    int hoveredConnector = -1;
+    std::vector<std::pair<std::string, fs::path>> initialAttachments;
+    Json connectorMarkers = Json::array();
+    std::optional<std::pair<std::string, fs::path>> attachmentTest;
+    int attachmentTestStage = 0;
+    PaintSnapshot attachmentPaintBefore;
+    size_t attachmentCountBefore = 0, attachmentSurfaceTriangles = 0;
+    Json attachmentTestReport;
     std::vector<std::string> importEntries;
     fs::path importPath;
     bool openImport = false;
@@ -238,6 +248,8 @@ class App {
                         record(kind + ": " + message);
                         if (kind == "model")
                             loading = false;
+                        if (kind == "attachment")
+                            attaching = false;
                         if (kind == "export")
                             exporting = false;
                         if (kind == "catalog")
@@ -326,6 +338,9 @@ class App {
             paint.recover(settingsPath.parent_path() / "PaintRecovery");
         paint.reset(renderer);
         cancelKind("model");
+        cancelKind("attachment");
+        attaching = false;
+        hoveredConnector = -1;
         cancelKind("catalog");
         cancelKind("textures");
         cancelKind("livery");
@@ -352,11 +367,18 @@ class App {
         notice = "正在读取 " + pathString(path.filename());
         uint64_t gen = generation;
         auto device = renderer.device;
+        auto attachments = initialAttachments;
         launch(
             "model",
-            [path, device](Progress p, const std::atomic_bool* cancel) {
+            [path, device, attachments](Progress p, const std::atomic_bool* cancel) {
                 auto start = Clock::now();
                 auto scene = Scene::load(path, p, cancel);
+                for (const auto& [connector, childPath] : attachments) {
+                    require(!*cancel, "Cancelled");
+                    int target = connectorIndex(*scene, connector);
+                    auto child = Scene::load(childPath, p, cancel);
+                    scene = attachScene(*scene, *child, target);
+                }
                 auto gpu = GpuModel::prepare(device.Get(), scene, cancel, p);
                 Camera camera;
                 camera.fit(*scene);
@@ -368,7 +390,9 @@ class App {
                 loading = false;
                 renderer.model = std::move(loaded.model);
                 renderer.camera = loaded.camera;
-                renderer.model->update(renderer.context.Get(), args);
+                baseline = renderer.model->scene->defaultArgs;
+                args = baseline;
+                renderer.model->update(renderer.context.Get(), args, renderer.options.attachments);
                 loadSeconds = loaded.seconds;
                 auto& scene = *renderer.model->scene;
                 if (!scene.limits.empty())
@@ -396,11 +420,139 @@ class App {
                     selectLivery(initialLivery);
             });
     }
-    void startTextures() {
+    static int connectorIndex(const Scene& scene, const std::string& name) {
+        return findConnector(scene, name);
+    }
+    void attachModel(int target, const fs::path& path) {
+        require(renderer.model && !loading && !attaching && !paint.busy(), "请等待模型与绘制任务完成");
+        auto source = renderer.model->scene;
+        require(target >= 0 && target < int(source->nodes.size()), "无效挂点");
+        attaching = true;
+        playing = false;
+        const uint64_t gen = generation;
+        auto device = renderer.device;
+        notice = "正在连接 " + pathString(path.filename()) + " → " + source->nodes[target].name;
+        launch(
+            "attachment",
+            [source, target, path, device](Progress progress, const std::atomic_bool* cancel) {
+                auto child = Scene::load(path, progress, cancel);
+                require(!*cancel, "Cancelled");
+                auto combined = attachScene(*source, *child, target);
+                return GpuModel::prepare(device.Get(), combined, cancel, progress);
+            },
+            [this, gen](std::shared_ptr<GpuModel> model) {
+                if (gen != generation)
+                    return;
+                renderer.model = std::move(model);
+                for (auto [argument, value] : renderer.model->scene->defaultArgs) {
+                    baseline.try_emplace(argument, value);
+                    args.try_emplace(argument, value);
+                }
+                renderer.options.attachments = true;
+                renderer.model->update(renderer.context.Get(), args, true);
+                paint.extendScene(renderer);
+                attaching = false;
+                lastHighlight = -2;
+                analysis.reset();
+                cancelKind("analysis");
+                startAnalysis();
+                for (const auto& track : renderer.model->scene->tracks) {
+                    auto name = renderer.model->scene->nodes[track.node].name;
+                    auto& names = argNames[track.arg];
+                    if (names.size() < 500 && names.find(name) == std::string::npos)
+                        names += name + "\n";
+                }
+                startTextures(true);
+                const auto& a = renderer.model->scene->attachments.back();
+                notice = "已连接 " + pathString(a.source.filename()) + " → " +
+                         renderer.model->scene->nodes[a.targetNode].name + " · 可直接绘制外挂涂装";
+                if (a.attachNode < 0)
+                    notice += "（未找到 AttachPoint，已按模型原点连接）";
+                record(notice);
+                for (const auto& warning : renderer.model->scene->warnings)
+                    record(warning);
+            });
+    }
+    bool connectorOverlay(ImVec2 origin, ImVec2 size, bool hovered) {
+        hoveredConnector = -1;
+        connectorMarkers = Json::array();
+        if (!renderer.model || !renderer.options.connectors || size.x <= 0 || size.y <= 0)
+            return false;
+        const auto& scene = *renderer.model->scene;
+        const auto& world = renderer.model->world;
+        const Mat clip = renderer.camera.projection(size.x / size.y) * renderer.camera.view();
+        struct Marker {
+            int node;
+            ImVec2 position;
+            bool mount, occupied;
+        };
+        std::vector<Marker> markers;
+        float nearest = 11 * 11;
+        for (int i = 0; i < int(scene.nodes.size()); ++i) {
+            const auto& node = scene.nodes[i];
+            if (node.extras.value("edm_type", "") != "Connector" || size_t(i) >= world.size() ||
+                (!renderer.options.attachments && node.extras.contains("edm_attachment")) ||
+                world[i].block<3, 3>(0, 0).cwiseAbs().maxCoeff() < 1e-20)
+                continue;
+            V4 point = clip * world[i].col(3);
+            if (point.w() <= 1e-7)
+                continue;
+            point /= point.w();
+            if (std::abs(point.x()) > 1 || std::abs(point.y()) > 1 || point.z() < 0 || point.z() > 1)
+                continue;
+            const ImVec2 screen{origin.x + float(point.x() * .5 + .5) * size.x,
+                                origin.y + float(.5 - point.y() * .5) * size.y};
+            const auto name = lower(node.name);
+            bool mount = name.starts_with("pylon") || name.starts_with("point");
+            bool occupied = std::any_of(scene.attachments.begin(), scene.attachments.end(),
+                                        [i](const auto& item) { return item.targetNode == i; });
+            markers.push_back({i, screen, mount, occupied});
+            connectorMarkers.push_back({{"node", i}, {"name", node.name}, {"x", screen.x}, {"y", screen.y}});
+            float dx = ImGui::GetIO().MousePos.x - screen.x, dy = ImGui::GetIO().MousePos.y - screen.y;
+            float distance = dx * dx + dy * dy + (mount ? 0 : .01f);
+            if (hovered && distance < nearest) {
+                nearest = distance;
+                hoveredConnector = i;
+            }
+        }
+        auto* draw = ImGui::GetWindowDrawList();
+        std::stable_sort(markers.begin(), markers.end(), [](const auto& a, const auto& b) {
+            return int(a.occupied) * 2 + int(a.mount) < int(b.occupied) * 2 + int(b.mount);
+        });
+        draw->PushClipRect(origin, {origin.x + size.x, origin.y + size.y}, true);
+        for (const auto& marker : markers) {
+            const bool hot = marker.node == hoveredConnector;
+            const ImU32 color = marker.occupied ? IM_COL32(255, 190, 96, 235)
+                                : marker.mount  ? IM_COL32(98, 193, 255, 245)
+                                                : IM_COL32(134, 156, 182, 190);
+            draw->AddCircleFilled(marker.position, hot ? 8.f : 5.f, IM_COL32(9, 17, 27, 230));
+            draw->AddCircle(marker.position, hot ? 8.f : 5.f, color, 20, hot ? 2.5f : 1.5f);
+            draw->AddCircleFilled(marker.position, 1.7f, color);
+        }
+        draw->PopClipRect();
+        if (hoveredConnector >= 0) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(scene.nodes[hoveredConnector].name.c_str());
+            ImGui::TextDisabled("点击加载 EDM · 自动对齐 AttachPoint");
+            ImGui::EndTooltip();
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !attaching && !loading && !paint.busy()) {
+                int target = hoveredConnector;
+                if (auto path = dialog(hwnd, false, false, L"选择要连接到挂点的 EDM"))
+                    attachModel(target, *path);
+            }
+            return true;
+        }
+        return false;
+    }
+    void startTextures(bool reuseExisting = false) {
         textureReadyTime = 0;
         cancelKind("textures");
         textureGeneration++;
-        renderer.textures = {};
+        auto cached =
+            reuseExisting ? renderer.textures.images : std::map<std::string, std::shared_ptr<GpuTexture>>{};
+        if (!reuseExisting)
+            renderer.textures = {};
         if (noTextures || !renderer.model) {
             stream.reset();
             return;
@@ -410,13 +562,17 @@ class App {
         auto extra = textureDir;
         auto next = std::make_shared<TextureStream>();
         next->bindings.resize(source->materials.size());
+        if (reuseExisting)
+            std::copy_n(renderer.textures.material.begin(),
+                        std::min(renderer.textures.material.size(), next->bindings.size()),
+                        next->bindings.begin());
         stream = next;
         int maxSize = std::array<int, 4>{1024, 2048, 4096, 8192}[textureQuality];
         const size_t budget = size_t(previewBudgetGB(textureBudgetGB) * (1024ull * 1024 * 1024));
         launch(
             "textures",
-            [next, source, selected, extra, maxSize, budget](Progress progress,
-                                                             const std::atomic_bool* cancel) {
+            [next, source, selected, extra, maxSize, budget, cached](Progress progress,
+                                                                     const std::atomic_bool* cancel) {
                 auto start = Clock::now();
                 TextureResolver resolver(source->source, extra, selected);
                 std::set<std::string> seen;
@@ -448,8 +604,15 @@ class App {
                     auto key = found.key();
                     progress("加载贴图 " + std::to_string(i + 1) + " / " + std::to_string(requests.size()));
                     try {
-                        auto image = loadTexture(found, maxSize);
                         size_t allowance = (budget - used) / std::max(size_t(1), requests.size() - i);
+                        if (auto old = cached.find(key);
+                            old != cached.end() && old->second->bytes <= allowance) {
+                            used += old->second->bytes;
+                            std::lock_guard lock(next->mutex);
+                            ++next->total;
+                            continue;
+                        }
+                        auto image = loadTexture(found, maxSize);
                         while (image->bytes() > allowance &&
                                image->firstMip + 1 < image->pixels.GetMetadata().mipLevels)
                             image->firstMip++;
@@ -512,6 +675,9 @@ class App {
             lock.unlock();
             try {
                 auto texture = uploadTexture(renderer.device.Get(), *pending.image);
+                if (auto old = renderer.textures.images.find(pending.key);
+                    old != renderer.textures.images.end())
+                    renderer.textures.bytes -= old->second->bytes;
                 renderer.textures.bytes += texture->bytes;
                 renderer.textures.images[pending.key] = texture;
             } catch (...) {
@@ -561,7 +727,10 @@ class App {
     }
     void applyLivery(std::shared_ptr<Livery> selected) {
         livery = selected;
-        baseline = livery ? livery->args : Args{};
+        baseline = renderer.model ? renderer.model->scene->defaultArgs : Args{};
+        if (livery)
+            for (auto [argument, value] : livery->args)
+                baseline[argument] = value;
         args = baseline;
         poseDirty = true;
         playing = false;
@@ -728,6 +897,8 @@ class App {
             [this, path](Json report) {
                 exporting = false;
                 notice = "导出完成：" + pathString(*path);
+                if (report.contains("description_lua"))
+                    notice += " · 涂装配置：" + report["description_lua"].get<std::string>();
                 record(notice);
                 record(report.dump(2));
             });
@@ -1087,7 +1258,9 @@ class App {
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("绘制", nullptr, rightTab == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+                ImGui::BeginDisabled(attaching);
                 paint.panel(hwnd, renderer, args);
+                ImGui::EndDisabled();
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("导出", nullptr, rightTab == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
@@ -1255,13 +1428,18 @@ class App {
                                                            : "未编辑涂装");
         space(4);
         ImVec2 size = ImGui::GetContentRegionAvail();
-        const float controlsHeight = 32 + ImGui::GetFrameHeight() + 5 + ImGui::GetStyle().ItemSpacing.y * 5;
+        const bool narrowControls = ImGui::GetContentRegionAvail().x < 610;
+        const float controlsHeight =
+            32 + ImGui::GetFrameHeight() * (narrowControls ? 2 : 1) + 5 + ImGui::GetStyle().ItemSpacing.y * 6;
         size.y = std::max(100.f, size.y - controlsHeight);
         renderer.render(int(size.x), int(size.y));
         ImVec2 origin = ImGui::GetCursorScreenPos();
         ImGui::Image(renderer.view(), size);
         bool hovered = ImGui::IsItemHovered();
-        bool paintMouse = paint.viewport(renderer, origin, size, hovered);
+        bool connectorMouse = connectorOverlay(origin, size, hovered);
+        bool paintMouse = attaching || connectorMouse;
+        if (!attaching)
+            paintMouse |= paint.viewport(renderer, origin, size, hovered && !connectorMouse);
         cameraMoving = false;
         if (hovered && !io.WantTextInput) {
             if ((!paintMouse && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) ||
@@ -1298,7 +1476,8 @@ class App {
                           compactNumber(renderer.visibleTriangles).c_str(),
                           renderer.model->scene->meshes.size());
             overlay->AddText({origin.x + 16, origin.y + 14}, IM_COL32(151, 178, 211, 230), stats);
-            std::string help = paint.active() && renderer.options.editedLivery
+            std::string help = renderer.options.connectors ? "点击挂点加载 EDM · Pylon / Point 支持逐级挂接"
+                               : paint.active() && renderer.options.editedLivery
                                    ? "按位置自动绘制 · 右键旋转 · 中键平移"
                                    : "左 / 右键旋转  ·  中键平移  ·  滚轮缩放";
             overlay->AddText({origin.x + 16, origin.y + size.y - 30}, IM_COL32(111, 139, 173, 220),
@@ -1331,6 +1510,22 @@ class App {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
                 "取消勾选显示编辑前的涂装；编辑和撤销记录保留。\n保存与导出始终包含已编辑的内容。");
+        if (!narrowControls)
+            ImGui::SameLine(0, 20);
+        ImGui::Checkbox("显示挂点", &renderer.options.connectors);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("蓝色为 Pylon / Point；橙色表示已有外挂。\n点击圆点加载 "
+                              "EDM。标记可透过模型查看，绘制时可关闭。");
+        ImGui::SameLine(0, 20);
+        ImGui::BeginDisabled(attaching || paint.busy());
+        if (ImGui::Checkbox("显示外挂物体", &renderer.options.attachments)) {
+            paint.invalidateSurface(renderer);
+            poseDirty = true;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(
+                "隐藏后，外挂不参与画笔拾取和图片投影遮挡。\n绘制记录保留；模型导出仍包含所有已连接的外挂。");
         ImGui::EndChild();
         if (showPanels) {
             ImGui::SameLine(0, 5);
@@ -1399,7 +1594,7 @@ class App {
             poseDirty = true;
         }
         if (poseDirty && renderer.model) {
-            renderer.model->update(renderer.context.Get(), args);
+            renderer.model->update(renderer.context.Get(), args, renderer.options.attachments);
             poseDirty = false;
         }
         int highlight = highlightMotion ? selectedArg : -1;
@@ -1410,8 +1605,35 @@ class App {
             renderer.model->highlight(renderer.context.Get(), affected);
             lastHighlight = highlight;
         }
-        paint.tick(renderer, args);
+        auto sceneBeforePaint = renderer.model ? renderer.model->scene : nullptr;
+        if (!attaching)
+            paint.tick(renderer, args);
         if (auto restored = paint.takeRestoredAppearance()) {
+            bool sceneChanged = renderer.model && renderer.model->scene != sceneBeforePaint;
+            if (sceneChanged) {
+                if (sceneBeforePaint)
+                    for (const auto& attachment : sceneBeforePaint->attachments)
+                        for (auto [original, mapped] : attachment.argumentMap) {
+                            args.erase(mapped);
+                            baseline.erase(mapped);
+                        }
+                for (auto [argument, value] : renderer.model->scene->defaultArgs) {
+                    args[argument] = value;
+                    baseline[argument] = value;
+                }
+                argNames.clear();
+                for (const auto& track : renderer.model->scene->tracks) {
+                    auto& names = argNames[track.arg];
+                    if (names.size() < 500)
+                        names += renderer.model->scene->nodes[track.node].name + "\n";
+                }
+                if (!renderer.model->scene->limits.contains(selectedArg))
+                    selectedArg = renderer.model->scene->limits.empty()
+                                      ? -1
+                                      : renderer.model->scene->limits.begin()->first;
+                lastHighlight = -2;
+                paint.invalidateSurface(renderer);
+            }
             if (restored->restoreAppearance) {
                 cancelKind("livery");
                 textureDir = restored->textureDirectory;
@@ -1423,11 +1645,17 @@ class App {
                     luaContext = Json::object();
                 contextText = luaContext.dump(2);
                 paint.bind(renderer, livery, textureDir);
+            } else if (sceneChanged) {
+                startAnalysis();
+                startTextures();
             }
+            if (sceneChanged)
+                renderer.model->update(renderer.context.Get(), args, renderer.options.attachments);
             for (const auto& warning : restored->warnings)
                 record(warning);
         }
     }
+#include "attachment_app_test.inc"
     bool diagnostics(double frameSeconds) {
         if (!smoke)
             return false;
@@ -1446,6 +1674,8 @@ class App {
         }
         if (!renderer.model || loading || !texturesReady())
             return false;
+        if (attaching)
+            return false;
         for (const auto& job : jobs)
             if (!job->finished &&
                 (job->kind == "livery" || job->kind == "catalog" || job->kind == "analysis"))
@@ -1454,6 +1684,8 @@ class App {
             !paint.exerciseAutomatic(renderer, autoPaintImage, autoPaintDirectory, autoPaintDimension))
             return false;
         if (!paintMaterial.empty() && !paint.exercise(renderer, paintMaterial, paintResult))
+            return false;
+        if (attachmentTest && !exerciseAttachmentInteraction())
             return false;
         if (!decalTestDirectory.empty() &&
             !paint.exerciseDecal(renderer, decalTestImage, decalTestDirectory, decalTestDimension))
@@ -1478,7 +1710,7 @@ class App {
                         animated[a] = lo + (hi - lo) * .613;
                     }
                 gpuReport.push_back(renderer.verifyGpu(animated));
-                renderer.model->update(renderer.context.Get(), args);
+                renderer.model->update(renderer.context.Get(), args, renderer.options.attachments);
             }
             benchUploads = renderer.model->vertexUploads;
             benchEvals = renderer.model->sceneEvaluations;
@@ -1499,6 +1731,8 @@ class App {
         auto samples = frames;
         std::sort(samples.begin(), samples.end());
         auto stats = renderer.model->scene->summary();
+        stats["attachment_interaction"] = attachmentTestReport;
+        stats["connector_markers"] = connectorMarkers;
         stats.update(
             {{"model_ready_seconds", loadSeconds},
              {"textures_ready_seconds", textureReadyTime},
@@ -1610,6 +1844,23 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
         };
         if (key == L"--smoke")
             app.smoke = true;
+        else if (key == L"--attach") {
+            auto spec = utf8(value());
+            auto equals = spec.find('=');
+            require(equals != std::string::npos && equals > 0 && equals + 1 < spec.size(),
+                    "--attach requires connector=model.edm");
+            app.initialAttachments.emplace_back(spec.substr(0, equals), wide(spec.substr(equals + 1)));
+        } else if (key == L"--attachment-test") {
+            auto spec = utf8(value());
+            auto equals = spec.find('=');
+            require(equals != std::string::npos && equals > 0 && equals + 1 < spec.size(),
+                    "--attachment-test requires connector=model.edm");
+            app.attachmentTest = std::pair{spec.substr(0, equals), fs::path(wide(spec.substr(equals + 1)))};
+            app.smoke = true;
+        } else if (key == L"--show-connectors")
+            app.renderer.options.connectors = true;
+        else if (key == L"--hide-attachments")
+            app.renderer.options.attachments = false;
         else if (key == L"--capture")
             app.capturePath = value();
         else if (key == L"--metrics")

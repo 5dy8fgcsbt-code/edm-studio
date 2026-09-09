@@ -14,6 +14,9 @@ class PaintEditor {
     ~PaintEditor();
     void bind(Renderer& renderer, std::shared_ptr<Livery> livery, const fs::path& textureDirectory);
     void reset(Renderer& renderer);
+    // Append-only scene replacement keeps canvas indices, undo history and pending artwork intact.
+    void extendScene(Renderer& renderer);
+    void invalidateSurface(Renderer& renderer);
     void quiesce();
     void tick(Renderer& renderer, const Args& args);
     void panel(HWND window, Renderer& renderer, const Args& args);

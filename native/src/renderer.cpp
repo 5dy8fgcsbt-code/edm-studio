@@ -230,13 +230,17 @@ void GpuModel::highlight(ID3D11DeviceContext* context, std::span<const size_t> m
     if (changed)
         context->UpdateSubresource(meshData.Get(), 0, nullptr, data.data(), 0, 0);
 }
-void GpuModel::update(ID3D11DeviceContext* context, const Args& args) {
-    world = scene->evaluate(args);
+void GpuModel::update(ID3D11DeviceContext* context, const Args& args, bool attachmentsVisible) {
+    world = scene->evaluate(args, attachmentsVisible);
+    Args effective = scene->defaultArgs;
+    for (auto [argument, value] : args)
+        effective[argument] = value;
     sceneEvaluations++;
     posedMin = V3::Constant(std::numeric_limits<double>::infinity());
     posedMax = -posedMin;
     for (size_t mi = 0; mi < scene->meshes.size(); mi++) {
         auto& m = scene->meshes[mi];
+        draws[mi].visible = attachmentsVisible || !m.extras.contains("edm_attachment");
         size_t base = data[mi].transform;
         if (m.skinned()) {
             for (size_t j = 0; j < m.skinNodes.size(); j++)
@@ -270,15 +274,15 @@ void GpuModel::update(ID3D11DeviceContext* context, const Args& args) {
             draw.posedMin = center - radius;
             draw.posedMax = center + radius;
         }
-        if (draw.count && m.numbers.empty() &&
+        if (draw.visible && draw.count && m.numbers.empty() &&
             (m.skinned() || world[m.node].block<3, 3>(0, 0).cwiseAbs().maxCoeff() >= 1e-20)) {
             posedMin = posedMin.cwiseMin(draw.posedMin);
             posedMax = posedMax.cwiseMax(draw.posedMax);
         }
         for (size_t j = 0; j < m.numbers.size(); j++) {
             auto& c = m.numbers[j];
-            numbers[data[mi].number + j] = {float(c.u != -1 ? argValue(args, c.u) * c.su : 0),
-                                            float(c.v != -1 ? argValue(args, c.v) * c.sv : 0), 0, 0};
+            numbers[data[mi].number + j] = {float(c.u != -1 ? argValue(effective, c.u) * c.su : 0),
+                                            float(c.v != -1 ? argValue(effective, c.v) * c.sv : 0), 0, 0};
         }
     }
     if (!posedMin.allFinite() || !posedMax.allFinite())
@@ -577,7 +581,7 @@ void Renderer::updateSurfaceDecal() {
                 context->VSSetShaderResources(0, 3, meshes);
                 for (const auto& draw : model->draws) {
                     const auto& mesh = model->scene->meshes[draw.index];
-                    if (!draw.count || !mesh.numbers.empty() ||
+                    if (!draw.visible || !draw.count || !mesh.numbers.empty() ||
                         (!mesh.skinned() &&
                          model->world[mesh.node].block<3, 3>(0, 0).cwiseAbs().maxCoeff() < 1e-20))
                         continue;
@@ -678,6 +682,8 @@ void Renderer::render(int width, int height) {
         std::vector<const GpuDraw*> sorted;
         sorted.reserve(model->draws.size());
         for (auto& draw : model->draws) {
+            if (!draw.visible)
+                continue;
             auto& mesh = model->scene->meshes[draw.index];
             if (!mesh.skinned() && model->world[mesh.node].block<3, 3>(0, 0).cwiseAbs().maxCoeff() < 1e-20)
                 continue;
@@ -761,7 +767,7 @@ void Renderer::endFrame(bool vsync) {
 }
 Json Renderer::verifyGpu(const Args& args) {
     require(bool(model), "GPU validation needs a model");
-    model->update(context.Get(), args);
+    model->update(context.Get(), args, options.attachments);
     auto code = shader("VS", "vs_5_0");
     D3D11_SO_DECLARATION_ENTRY declaration{0, "POSITION", 0, 0, 3, 0};
     UINT streamStride = 12;

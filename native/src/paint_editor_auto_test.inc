@@ -306,7 +306,7 @@ bool PaintEditor::exerciseAutomatic(Renderer& renderer, const fs::path& image, c
             p.autoResult["project"] = {{"manifest", pathString(p.lastSavedProject)}};
             publish("reopening_full_project");
             p.autoStage = 6;
-            p.openProject(p.lastSavedProject);
+            p.openProject(renderer, p.lastSavedProject);
             return false;
         }
         if (p.autoStage == 6) {
@@ -398,7 +398,7 @@ bool PaintEditor::exerciseAutomatic(Renderer& renderer, const fs::path& image, c
             p.autoBefore.clear();
             publish("restoring_main_project_after_template_test");
             p.autoStage = 9;
-            p.openProject(p.lastSavedProject);
+            p.openProject(renderer, p.lastSavedProject);
             return false;
         }
         require(p.autoStage == 9 && p.lastOpenRestoredAppearance && !hasEdits(),

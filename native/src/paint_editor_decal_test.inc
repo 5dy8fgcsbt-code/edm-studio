@@ -344,7 +344,7 @@ bool PaintEditor::exerciseDecal(Renderer& renderer, const fs::path& image, const
             p.decalDiagnosticResult["project"] = {{"manifest", pathString(p.lastSavedProject)}};
             publish("reopening_full_decal_project");
             p.decalDiagnosticStage = 8;
-            p.openProject(p.lastSavedProject);
+            p.openProject(renderer, p.lastSavedProject);
             return false;
         }
         if (p.decalDiagnosticStage == 8) {

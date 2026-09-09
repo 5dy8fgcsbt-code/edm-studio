@@ -16,7 +16,9 @@ void ensureAliases() {
             if (found != livery->textures.end())
                 diffuse = lower(found->second.name) + (found->second.common ? "|common" : "|local");
         }
-        std::string key = lower(m.name) + "\n" + diffuse;
+        // Two attached instances may have the same DCS material name but independent paint canvases.
+        std::string key = std::to_string(m.extras.value("edm_attachment", -1)) + "\n" +
+                          lower(pathString(m.source)) + "\n" + lower(m.name) + "\n" + diffuse;
         if (m.name.empty())
             key += "\n" + std::to_string(i);
         prepared.push_back(groups.emplace(key, i).first->second);

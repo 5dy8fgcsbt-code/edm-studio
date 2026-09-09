@@ -283,7 +283,7 @@ void PaintEditor::panel(HWND window, Renderer& renderer, const Args& args) {
                 if (auto path = paintDialog(window, L"打开绘制工程", 2)) {
                     if (hasEdits())
                         recover(p.recoveryRoot);
-                    p.openProject(*path);
+                    p.openProject(renderer, *path);
                 }
         }
         operationsDisabled.end();

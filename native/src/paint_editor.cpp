@@ -1,4 +1,5 @@
 #include "paint_editor.h"
+#include "paint_assembly.h"
 #include "paint_stroke_path.h"
 #include "paint_batch.h"
 #include "paint_auto_mapping.h"
@@ -185,6 +186,7 @@ struct PaintEditor::Impl {
     std::map<int, Entry> entries;
     std::shared_ptr<PaintSurface> surface;
     Args currentArgs, surfaceArgs;
+    bool attachmentsVisible = true;
     std::vector<std::shared_ptr<Work>> work;
     uint64_t generation = 0;
     int material = -1, tool = 0;
@@ -553,9 +555,10 @@ struct PaintEditor::Impl {
         surfacePending = true;
         auto source = scene;
         auto pose = currentArgs;
+        auto visible = attachmentsVisible;
         auto gen = generation;
-        start([this, source, pose, gen](Progress p, const std::atomic_bool* cancel) {
-            auto result = std::make_shared<PaintSurface>(source, pose, p, cancel);
+        start([this, source, pose, gen, visible](Progress p, const std::atomic_bool* cancel) {
+            auto result = std::make_shared<PaintSurface>(source, pose, p, cancel, visible);
             return [this, result, pose, gen] {
                 if (gen != generation)
                     return;
@@ -733,22 +736,38 @@ struct PaintEditor::Impl {
             };
         });
     }
-    void openProject(const fs::path& path) {
+    void openProject(Renderer& renderer, const fs::path& path) {
         require(!controlsBusy(), "请先完成绘制任务");
-        auto source = scene;
+        auto source = renderer.model->scene;
+        auto device = renderer.device;
         auto gen = generation;
-        start([this, source, path, gen](Progress p, const std::atomic_bool* cancel) {
+        start([this, &renderer, source, device, path, gen](Progress p, const std::atomic_bool* cancel) {
             p("读取完整绘制工程与基础涂装…");
-            auto document = std::make_shared<PaintProjectDocument>(loadPaintDocument(*source, path, cancel));
+            auto restoredScene = restorePaintAssembly(source, path, p, cancel);
+            auto manifest = fs::is_directory(path) ? path / "project.edmpaint.json" : path;
+            auto document =
+                std::make_shared<PaintProjectDocument>(loadPaintDocument(*restoredScene, manifest, cancel));
+            auto prepared = restoredScene == source
+                                ? std::shared_ptr<GpuModel>{}
+                                : GpuModel::prepare(device.Get(), restoredScene, cancel, p);
             auto loaded = std::make_shared<std::map<int, Entry>>();
             for (auto& [i, image] : document->images) {
                 require(!*cancel, "Cancelled");
                 (*loaded)[i] = Entry{std::make_shared<PaintCanvas>(*image), {}, "绘制工程", {}};
             }
             document->images.clear();
-            return [this, loaded, document, gen] {
+            return [this, &renderer, loaded, document, restoredScene, prepared, gen] {
                 if (gen != generation)
                     return;
+                if (prepared) {
+                    renderer.model = prepared;
+                    scene = restoredScene;
+                    renderer.model->update(renderer.context.Get(), currentArgs, renderer.options.attachments);
+                    surface.reset();
+                    surfacePending = false;
+                    decalHit.reset();
+                    renderer.decalPreview = {};
+                }
                 entries = std::move(*loaded);
                 history.clear();
                 pendingTemplate.reset();
@@ -822,6 +841,33 @@ void PaintEditor::reset(Renderer& renderer) {
     renderer.diffuseOverrides.clear();
     renderer.decalPreview = {};
 }
+void PaintEditor::invalidateSurface(Renderer& renderer) {
+    require(!busy(), "请等待当前绘制任务完成");
+    auto& p = *impl;
+    ++p.generation;
+    p.surface.reset();
+    p.surfacePending = false;
+    p.decalHit.reset();
+    p.projectionDragging = false;
+    p.attachmentsVisible = renderer.options.attachments;
+    renderer.decalPreview = {};
+}
+void PaintEditor::extendScene(Renderer& renderer) {
+    require(renderer.model && !busy(), "无法在绘制期间改变挂载模型");
+    auto& p = *impl;
+    require(!p.scene || (p.scene->source == renderer.model->scene->source &&
+                         p.scene->materials.size() <= renderer.model->scene->materials.size() &&
+                         p.scene->meshes.size() <= renderer.model->scene->meshes.size()),
+            "外挂场景必须保留已有材质和网格索引");
+    p.scene = renderer.model->scene;
+    // Existing canonical IDs retain their original first material, so canvas/undo keys remain stable.
+    auto oldAliases = p.canonicalIds;
+    p.canonicalIds.clear();
+    p.ensureAliases();
+    std::copy(oldAliases.begin(), oldAliases.end(), p.canonicalIds.begin());
+    invalidateSurface(renderer);
+    p.status = "外挂已连接 · 可直接在机体和外挂表面绘制";
+}
 void PaintEditor::quiesce() {
     impl->stop();
     impl->strokePath.release();
@@ -834,6 +880,8 @@ void PaintEditor::tick(Renderer& renderer, const Args& args) {
     auto& p = *impl;
     p.poll();
     p.currentArgs = args;
+    if (p.attachmentsVisible != renderer.options.attachments && !busy())
+        invalidateSurface(renderer);
     if (p.decalHit && p.decalPose != args)
         p.decalHit.reset();
     p.updateDecalPreview(renderer);
@@ -882,6 +930,7 @@ Json PaintEditor::diagnostic() const {
             {"canvases", impl->entries.size()},
             {"stroke_pixels", impl->strokePixels},
             {"surface_triangles", impl->surface ? impl->surface->triangleCount() : 0},
+            {"surface_attachments_visible", impl->attachmentsVisible},
             {"validation", impl->diagnosticResult},
             {"automatic_validation", impl->autoResult},
             {"wrap", impl->wrapResult},
@@ -955,7 +1004,10 @@ bool PaintEditor::exercise(Renderer& renderer, const std::string& material, cons
     auto& canvas = *entry.canvas;
     auto before = canvas.image().rgba;
     PaintBrush brush;
-    brush.radius = std::max(.1, renderer.camera.radius * .018);
+    // A store can be much smaller than the aircraft framing the camera. Keep the diagnostic stamp
+    // proportional to its target material so the production interactive UV budget remains meaningful.
+    auto [materialMin, materialMax] = p.surface->bounds(p.material);
+    brush.radius = std::clamp((materialMax - materialMin).norm() * .005, .005, .1);
     brush.color = {.98f, .03f, .05f, 1};
     canvas.beginStroke("诊断画笔");
     auto started = Clock::now();
@@ -1153,7 +1205,20 @@ bool PaintEditor::exerciseProject(Renderer& renderer, const fs::path& directory)
     if (p.projectDiagnosticStage == 1) {
         require(!p.lastSavedProject.empty() && fs::exists(p.lastSavedProject),
                 "Full project diagnostic did not publish its manifest");
-        p.openProject(p.lastSavedProject);
+        if (!p.scene->attachments.empty()) {
+            // Exercise opening a saved assembly from only its base EDM, as after restarting the app.
+            auto base = Scene::load(p.scene->source);
+            renderer.model = GpuModel::prepare(renderer.device.Get(), base);
+            renderer.model->update(renderer.context.Get(), p.currentArgs, renderer.options.attachments);
+            p.scene = base;
+            p.entries.clear();
+            p.canonicalIds.clear();
+            p.surface.reset();
+            p.material = -1;
+            renderer.diffuseOverrides.clear();
+            p.projectDiagnosticResult["assembly_rebuilt_from_base"] = true;
+        }
+        p.openProject(renderer, p.lastSavedProject);
         p.projectDiagnosticStage = 2;
         return false;
     }
@@ -1173,6 +1238,10 @@ bool PaintEditor::exerciseProject(Renderer& renderer, const fs::path& directory)
         ++checked;
     }
     p.projectDiagnosticResult = {{"project", pathString(p.lastSavedProject)},
+                                 {"assembly_rebuilt_from_base",
+                                  p.projectDiagnosticResult.is_object() &&
+                                      p.projectDiagnosticResult.value("assembly_rebuilt_from_base", false)},
+                                 {"restored_attachments", p.scene->attachments.size()},
                                  {"materials_checked", checked},
                                  {"pixels_match", true},
                                  {"gpu_pixels_match", true},

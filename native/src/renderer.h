@@ -33,7 +33,7 @@ struct GpuMeshData {
 };
 struct GpuDraw {
     uint32_t count, first, base, index;
-    bool transparent = false, mirrored = false;
+    bool transparent = false, mirrored = false, visible = true;
     V3 center = V3::Zero();
     double radius = 0;
     double maximumWeightMagnitude = 1;
@@ -55,11 +55,12 @@ struct GpuModel {
     static std::shared_ptr<GpuModel> prepare(ID3D11Device* device, std::shared_ptr<Scene> scene,
                                              const std::atomic_bool* cancel = nullptr,
                                              Progress progress = {});
-    void update(ID3D11DeviceContext* context, const Args& args);
+    void update(ID3D11DeviceContext* context, const Args& args, bool attachmentsVisible = true);
     void highlight(ID3D11DeviceContext* context, std::span<const size_t> meshes);
 };
 struct RenderOptions {
     bool textures = true, roughmet = true, wireframe = false, grid = true, editedLivery = true;
+    bool connectors = false, attachments = true;
     float exposure = 1.05f;
 };
 struct GpuTexture {
@@ -142,6 +143,8 @@ class Renderer {
                 {"height", targetHeight},
                 {"msaa_samples", msaaSamples},
                 {"edited_livery_visible", options.editedLivery},
+                {"connectors_visible", options.connectors},
+                {"attachments_visible", options.attachments},
                 {"decal_depth_updates", decalDepthUpdates}};
     }
 };
