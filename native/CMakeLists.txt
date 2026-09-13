@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(EDMStudioNative VERSION 0.12.1 LANGUAGES C CXX)
+project(EDMStudioNative VERSION 0.12.2 LANGUAGES C CXX)
 enable_language(RC)
 configure_file(src/version.rc.in ${CMAKE_CURRENT_BINARY_DIR}/version.rc @ONLY)
 set(CMAKE_CXX_STANDARD 20)

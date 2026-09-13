@@ -559,13 +559,13 @@ void exportRoundtrip() {
     check(imported->anim_stacks.count == 2 && imported->metadata.warnings.count == 0,
           "FBX retains independent host/payload animations with no structural warning");
     double maximum = 0;
-    auto compare = [&](const ufbx_scene& fbxPose, int argument, double time, double hostValue,
-                       double childValue) {
-        const auto gltfPose = gltf.world(argument, time);
+    auto compare = [&](const GlbReader& gltfReader, const ufbx_scene& fbxPose, int argument, double time,
+                       double hostValue, double childValue) {
+        const auto gltfPose = gltfReader.world(argument, time);
         for (size_t meshIndex = 0; meshIndex < scene->meshes.size(); ++meshIndex) {
             const auto& mesh = scene->meshes[meshIndex];
             const auto expected = analyticVertices(*scene, meshIndex, hostValue, childValue);
-            const auto actualGlb = gltf.vertices(mesh.node, gltfPose);
+            const auto actualGlb = gltfReader.vertices(mesh.node, gltfPose);
             check(actualGlb.size() == expected.size(), "GLB attachment vertex count");
             const auto name = scene->nodes[mesh.node].name + " / geometry 0";
             const auto* fbxNode = ufbx_find_node(&fbxPose, name.c_str());
@@ -591,7 +591,7 @@ void exportRoundtrip() {
             }
         }
     };
-    compare(*imported, -1, 0, .25, .8);
+    compare(gltf, *imported, -1, 0, .25, .8);
     for (int argument : {7, childArgument}) {
         std::ostringstream name;
         name << "Argument " << std::setw(3) << std::setfill('0') << argument;
@@ -604,11 +604,73 @@ void exportRoundtrip() {
             Imported pose(ufbx_evaluate_scene(imported.get(), stack->anim, time, &evaluate, &error),
                           ufbx_free_scene);
             check(bool(pose), "independent FBX attachment animation evaluation");
-            compare(*pose, argument, time, argument == 7 ? value : .25,
+            compare(gltf, *pose, argument, time, argument == 7 ? value : .25,
                     argument == childArgument ? value : .8);
         }
     }
-    std::cout << "Attachment GLB/FBX analytical round-trip: 19 poses, maximum " << maximum << " m\n";
+    const auto staticChecks = checks;
+    auto stillOptions = options;
+    stillOptions.arguments = std::vector<int>{};
+    stillOptions.baseline = {{7, .61}, {childArgument, .37}};
+    const auto stillGlbPath = root / "attachment-static.glb",
+               stillFbxPath = root / "attachment-static.fbx",
+               stillGltfPath = root / "attachment-static.gltf";
+    const auto glbReport = exportScene(*scene, stillGlbPath, stillOptions);
+    const auto fbxReport = exportScene(*scene, stillFbxPath, stillOptions);
+    const auto gltfReport = exportScene(*scene, stillGltfPath, stillOptions);
+    check(glbReport.at("exported_arguments").empty() && fbxReport.at("exported_arguments").empty() &&
+              gltfReport.at("exported_arguments").empty(),
+          "all three static attachment formats report zero exported animation arguments");
+    check(glbReport.at("baseline_arguments").at("7") == .61 &&
+              glbReport.at("baseline_arguments").at(std::to_string(childArgument)) == .37,
+          "static export reports the requested nondefault host and child pose");
+    const GlbReader stillGlb(stillGlbPath);
+    const auto stillGltf = Json::parse(readFile(stillGltfPath));
+    check(!stillGlb.document.contains("animations"), "static GLB contains no animation clips");
+    check(!stillGltf.contains("animations"), "static glTF contains no animation clips");
+    check(stillGltf.at("nodes") == stillGlb.document.at("nodes"),
+          "static glTF preserves the independently checked GLB node pose and hierarchy");
+    check(stillGltf.at("skins") == stillGlb.document.at("skins"),
+          "static glTF preserves the independently checked GLB skin and joints");
+    check(stillGltf.at("meshes") == stillGlb.document.at("meshes") &&
+              stillGltf.at("accessors") == stillGlb.document.at("accessors") &&
+              stillGltf.at("bufferViews") == stillGlb.document.at("bufferViews"),
+          "static glTF geometry, weights and inverse-bind accessor layout match GLB");
+    const auto byteLength = stillGltf.at("buffers").at(0).at("byteLength").get<size_t>();
+    require(byteLength <= stillGlb.binary.size(), "Static glTF buffer length exceeds GLB data");
+    const auto uri = stillGltf.at("buffers").at(0).at("uri").get<std::string>();
+    constexpr std::string_view prefix = "data:application/octet-stream;base64,";
+    check(uri.starts_with(prefix), "static glTF uses an embedded base64 binary buffer");
+    constexpr std::string_view alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::vector<uint8_t> decoded;
+    uint32_t packed = 0;
+    int bits = 0;
+    for (char digit : std::string_view(uri).substr(prefix.size())) {
+        if (digit == '=')
+            break;
+        const auto value = alphabet.find(digit);
+        require(value != std::string_view::npos, "Invalid static glTF base64 digit");
+        packed = (packed << 6) | uint32_t(value);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            decoded.push_back(uint8_t(packed >> bits));
+        }
+    }
+    check(decoded.size() == byteLength &&
+              std::equal(decoded.begin(), decoded.end(), stillGlb.binary.begin()),
+          "static glTF embeds the same independently checked GLB vertex and skin bytes");
+    error = {};
+    Imported stillFbx(ufbx_load_file(pathString(stillFbxPath).c_str(), &loadOptions, &error),
+                      ufbx_free_scene);
+    ufbx_format_error(detail, sizeof(detail), &error);
+    check(bool(stillFbx), std::string("independent strict static FBX attachment load: ") + detail);
+    check(stillFbx->anim_stacks.count == 0 && stillFbx->metadata.warnings.count == 0,
+          "static FBX has zero animation stacks and no structural warning");
+    compare(stillGlb, *stillFbx, -1, 0, .61, .37);
+    std::cout << "Attachment static export: " << checks - staticChecks
+              << " checks, host argument 7 = 0.61, child argument " << childArgument << " = 0.37\n";
+    std::cout << "Attachment GLB/FBX analytical round-trip: 20 poses, maximum " << maximum << " m\n";
 }
 } // namespace
 int main() {
