@@ -321,7 +321,7 @@ class App {
             textureDir = wide(settings.value("texture_directory", ""));
             textureQuality = std::clamp(settings.value("texture_quality", 2), 0, 3);
             exportFormat = std::clamp(settings.value("export_format", 0), 0, 3);
-            exportCurrentPose = settings.value("export_current_pose", false);
+            exportCurrentPose = settings.value("export_model_only", settings.value("export_current_pose", false));
             exportMode = std::clamp(settings.value("export_animation_scope", 0), 0, 1);
             if (auto budget = settings.find("texture_budget_gb");
                 budget != settings.end() && budget->is_number())
@@ -343,7 +343,7 @@ class App {
             settings["texture_directory"] = pathString(textureDir);
             settings["texture_quality"] = textureQuality;
             settings["export_format"] = exportFormat;
-            settings["export_current_pose"] = exportCurrentPose;
+            settings["export_model_only"] = exportCurrentPose;
             settings["export_animation_scope"] = exportMode;
             settings["texture_budget_gb"] = textureBudgetGB;
             settings["left_width"] = leftWidth;
@@ -940,8 +940,8 @@ class App {
         const Args capturedPose = args;
         const bool capturedStatic = staticExport();
         auto extension = exportExtensions[exportFormat];
-        auto filename = currentPath.stem().wstring() + L"." + extension;
-        auto path = dialog(hwnd, true, false, capturedStatic ? L"导出当前姿态（无动画）" : L"导出模型与动画",
+        auto filename = currentPath.stem().wstring() + (capturedStatic ? L"_model." : L".") + extension;
+        auto path = dialog(hwnd, true, false, capturedStatic ? L"导出纯模型（当前姿态）" : L"导出模型与动画",
                            extension, filename.c_str());
         if (!path)
             return;
@@ -955,6 +955,7 @@ class App {
         options.livery = livery;
         options.baseline = capturedPose;
         const bool staticObj = lower(pathString(path->extension())) == ".obj";
+        options.modelOnly = staticObj || capturedStatic;
         if (staticObj || capturedStatic)
             options.arguments = std::vector<int>{};
         else if (exportMode == 1) {
@@ -1255,7 +1256,7 @@ class App {
     }
     void exportPanel() {
         title("通用模型导出", "GLB · glTF · OBJ · FBX");
-        const char* formats[]{"GLB · 单文件", "glTF · 嵌入式", "OBJ · 静态模型", "FBX · 模型与动画"};
+        const char* formats[]{"GLB · 单文件", "glTF · 嵌入式", "OBJ · 静态模型", "FBX · 通用模型"};
         mutedText("文件格式");
         ImGui::SetNextItemWidth(-1);
         if (ImGui::Combo("##exportformat", &exportFormat, formats, 4))
@@ -1263,13 +1264,13 @@ class App {
         const bool staticObj = exportFormat == 2;
         bool currentPose = staticExport();
         ImGui::BeginDisabled(staticObj);
-        if (ImGui::Checkbox("只导出模型（当前姿态）", &currentPose)) {
+        if (ImGui::Checkbox("只导出模型（纯网格）", &currentPose)) {
             exportCurrentPose = currentPose;
             saveSettings();
         }
         ImGui::EndDisabled();
         if (currentPose)
-            mutedText("保留导出时的起落架、舵面和舱盖位置，\n不包含动画片段。贴图按下方选项导出。");
+            mutedText("固定当前姿态，只保留网格和材质。\n去除骨架、动画、挂点及辅助节点。\n贴图按下方选项导出，不附加 Lua 或报告。");
         const char* modes[]{"全部参数动画", "仅当前参数动画"};
         ImGui::BeginDisabled(currentPose);
         ImGui::SetNextItemWidth(-1);
@@ -1288,7 +1289,7 @@ class App {
             ImGui::Checkbox("导出贴图与当前涂装", &exportTextures);
         space(12);
         ImGui::BeginDisabled(!renderer.model || exporting);
-        if (primary(exporting ? "正在导出…" : currentPose ? "导出当前姿态" : "导出模型与动画", {-1, 44}))
+        if (primary(exporting ? "正在导出…" : currentPose ? "导出纯模型" : "导出模型与动画", {-1, 44}))
             exportDialog();
         ImGui::EndDisabled();
         if (exporting && ImGui::Button("取消导出", {-1, 34})) {
@@ -1312,7 +1313,7 @@ class App {
             mutedText(
                 "保存当前姿态与编号。\nOBJ 不包含动画或骨骼。\n移动文件时，请同时携带 MTL\n和贴图文件夹。");
         } else if (currentPose) {
-            mutedText("固定当前全部参数、蒙皮姿态与编号。\n保留模型层级，不写入动画轨道。");
+            mutedText("当前变形已烘焙到顶点，保留分件与编号。\n在 Blender 中导入后只有网格物体。");
         } else {
             mutedText("按原始范围导出参数动画。\n每段动画将其他参数固定在\n导出时的当前姿态。");
             space();
@@ -1513,7 +1514,7 @@ class App {
             openDialog();
         ImGui::SameLine();
         ImGui::BeginDisabled(!renderer.model || exporting);
-        if (primary(staticExport() ? "导出当前姿态" : "导出模型与动画", {182, 42}))
+        if (primary(staticExport() ? "导出纯模型" : "导出模型与动画", {182, 42}))
             exportDialog();
         ImGui::EndDisabled();
         space(6);

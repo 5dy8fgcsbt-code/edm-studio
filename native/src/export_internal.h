@@ -10,6 +10,8 @@ struct ExportPayload {
 };
 ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& options, Progress progress = {},
                                  const std::atomic_bool* cancel = nullptr);
+ExportPayload bakeModelOnlyPayload(ExportPayload source, Progress progress = {},
+                                   const std::atomic_bool* cancel = nullptr);
 Json exportObjScene(const Scene& scene, const fs::path& path, const ExportOptions& options,
                     Progress progress = {}, const std::atomic_bool* cancel = nullptr);
 Json exportFbxScene(const Scene& scene, const fs::path& path, const ExportOptions& options,

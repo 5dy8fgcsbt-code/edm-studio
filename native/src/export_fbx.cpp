@@ -294,6 +294,7 @@ struct Encoder {
     const ExportPayload& payload;
     Source source;
     Binary w;
+    const bool modelOnly;
     int64_t nextId = 100000;
     std::vector<int64_t> models, materials, videos;
     std::vector<Mat> bindReferenceWorld;
@@ -302,10 +303,11 @@ struct Encoder {
     std::map<std::string, int32_t> objectCounts;
     std::map<std::tuple<int, int, bool>, int64_t> textures;
     std::map<size_t, int64_t> opaqueVideos;
-    std::set<size_t> boneNodes;
+    std::set<size_t> boneNodes, ormImages;
     size_t meshCount = 0, triangleCount = 0, curveCount = 0, skinCount = 0;
     size_t rotationKeyCount = 0;
-    explicit Encoder(const ExportPayload& p, const std::atomic_bool* c) : payload(p), source{p}, w(c) {}
+    explicit Encoder(const ExportPayload& p, const std::atomic_bool* c)
+        : payload(p), source{p}, w(c), modelOnly(p.report.value("model_only", false)) {}
     const Json& doc() const {
         return payload.document;
     }
@@ -331,18 +333,20 @@ struct Encoder {
             w.leaf("FBXHeaderVersion", {Property(int32_t(1003))});
             w.leaf("FBXVersion", {Property(int32_t(7400))});
             w.leaf("EncryptionType", {Property(int32_t(0))});
-            w.node("CreationTimeStamp", {}, [&] {
-                SYSTEMTIME time{};
-                GetSystemTime(&time);
-                const std::pair<const char*, int32_t> fields[] = {
-                    {"Version", 1000},        {"Year", time.wYear},
-                    {"Month", time.wMonth},   {"Day", time.wDay},
-                    {"Hour", time.wHour},     {"Minute", time.wMinute},
-                    {"Second", time.wSecond}, {"Millisecond", time.wMilliseconds}};
-                for (auto [key, value] : fields)
-                    w.leaf(key, {Property(value)});
-            });
-            w.leaf("Creator", {Property("EDM Studio C++ " EDM_NATIVE_VERSION)});
+            if (!modelOnly) {
+                w.node("CreationTimeStamp", {}, [&] {
+                    SYSTEMTIME time{};
+                    GetSystemTime(&time);
+                    const std::pair<const char*, int32_t> fields[] = {
+                        {"Version", 1000},        {"Year", time.wYear},
+                        {"Month", time.wMonth},   {"Day", time.wDay},
+                        {"Hour", time.wHour},     {"Minute", time.wMinute},
+                        {"Second", time.wSecond}, {"Millisecond", time.wMilliseconds}};
+                    for (auto [key, value] : fields)
+                        w.leaf(key, {Property(value)});
+                });
+                w.leaf("Creator", {Property("EDM Studio C++ " EDM_NATIVE_VERSION)});
+            }
         });
         w.node("GlobalSettings", {}, [&] {
             w.leaf("Version", {Property(int32_t(1000))});
@@ -357,23 +361,31 @@ struct Encoder {
                 w.integer("OriginalUpAxisSign", 1);
                 w.scalar("UnitScaleFactor", 100.);
                 w.scalar("OriginalUnitScaleFactor", 100.);
-                w.integer("TimeMode", 11, "enum"); // 24 frames/s; curve times remain exact seconds.
-                w.prop("TimeSpanStart", "KTime", {Property(int64_t(0))});
-                double duration = payload.report.value("clip_duration_seconds", 3.);
-                w.prop("TimeSpanStop", "KTime", {Property(keyTime(duration))});
+                if (!modelOnly) {
+                    w.integer("TimeMode", 11, "enum"); // 24 frames/s; curve times remain exact seconds.
+                    w.prop("TimeSpanStart", "KTime", {Property(int64_t(0))});
+                    double duration = payload.report.value("clip_duration_seconds", 3.);
+                    w.prop("TimeSpanStop", "KTime", {Property(keyTime(duration))});
+                }
             });
         });
         w.node("Documents", {}, [&] {
             w.leaf("Count", {Property(int32_t(1))});
-            w.node("Document", {Property(id()), Property("EDM Studio"), Property("Scene")}, [&] {
-                w.node("Properties70", {}, [&] { w.string("ActiveAnimStackName", ""); });
-                w.leaf("RootNode", {Property(int64_t(0))});
-            });
+            w.node("Document",
+                   {Property(id()), Property(modelOnly ? "Scene" : "EDM Studio"), Property("Scene")}, [&] {
+                       if (!modelOnly)
+                           w.node("Properties70", {}, [&] { w.string("ActiveAnimStackName", ""); });
+                       w.leaf("RootNode", {Property(int64_t(0))});
+                   });
         });
-        w.leaf("References");
+        if (!modelOnly)
+            w.leaf("References");
     }
     std::string imageName(size_t i, bool opaque = false) const {
-        return "edm_image_" + std::to_string(i) + (opaque ? "_opaque_rgb.png" : ".png");
+        return std::string(modelOnly ? "image_" : "edm_image_") + std::to_string(i) +
+               (opaque                             ? "_opaque_rgb.png"
+                : modelOnly && ormImages.contains(i) ? "_RoughMet.png"
+                                                    : ".png");
     }
     DirectX::Blob opaquePng(size_t imageIndex) {
         w.check();
@@ -428,9 +440,12 @@ struct Encoder {
             w.leaf("Type", {Property("Clip")});
             w.node("Properties70", {}, [&] {
                 w.string("Path", name);
-                w.string("EDM_SourceImage", image.value("name", original));
-                w.string("EDM_OriginalImage", original);
-                w.string("EDM_AlphaPolicy", "OPAQUE RGB derivative; original PNG alpha preserved separately");
+                if (!modelOnly) {
+                    w.string("EDM_SourceImage", image.value("name", original));
+                    w.string("EDM_OriginalImage", original);
+                    w.string("EDM_AlphaPolicy",
+                             "OPAQUE RGB derivative; original PNG alpha preserved separately");
+                }
             });
             w.leaf("UseMipMap", {Property(int32_t(0))});
             w.leaf("Filename", {Property(name)});
@@ -450,6 +465,7 @@ struct Encoder {
         int64_t uid = id();
         textures[key] = uid;
         const int64_t video = opaque ? opaqueVideo(imageIndex) : videos.at(imageIndex);
+        require(video != 0, "FBX material references a missing image resource");
         auto name = imageName(imageIndex, opaque);
         object("Texture", uid, name + " / UV" + std::to_string(uvSet), "", [&] {
             w.leaf("Type", {Property("TextureVideoClip")});
@@ -468,7 +484,7 @@ struct Encoder {
                 w.vector("Scaling", V3::Ones());
                 w.integer("CurrentTextureBlendMode", 0, "enum");
                 w.integer("UseMaterial", 1, "bool");
-                if (opaque)
+                if (opaque && !modelOnly)
                     w.string("EDM_OriginalImage", imageName(imageIndex));
             });
         });
@@ -476,17 +492,42 @@ struct Encoder {
         return uid;
     }
     void materialResources() {
-        if (doc().contains("images"))
+        // Pure meshes only carry resources used by their materials. An opaque diffuse
+        // texture needs the RGB derivative, not a second unreferenced copy of its RGBA input.
+        std::set<size_t> originalImages;
+        if (modelOnly)
+            for (const auto& mat : doc().at("materials")) {
+                const auto& pbr = mat.at("pbrMetallicRoughness");
+                auto keep = [&](const Json& texture) {
+                    const auto image = doc().at("textures")
+                                           .at(texture.at("index").get<size_t>())
+                                           .at("source")
+                                           .get<size_t>();
+                    originalImages.insert(image);
+                    return image;
+                };
+                if (mat.value("alphaMode", "OPAQUE") != "OPAQUE" && pbr.contains("baseColorTexture"))
+                    keep(pbr.at("baseColorTexture"));
+                if (pbr.contains("metallicRoughnessTexture"))
+                    ormImages.insert(keep(pbr.at("metallicRoughnessTexture")));
+                if (mat.contains("occlusionTexture"))
+                    keep(mat.at("occlusionTexture"));
+            }
+        if (doc().contains("images")) {
+            videos.resize(doc().at("images").size());
             for (size_t i = 0; i < doc().at("images").size(); ++i) {
+                if (modelOnly && !originalImages.contains(i))
+                    continue;
                 const auto& image = doc().at("images").at(i);
                 int64_t uid = id();
-                videos.push_back(uid);
+                videos[i] = uid;
                 auto name = imageName(i);
                 object("Video", uid, name, "Clip", [&] {
                     w.leaf("Type", {Property("Clip")});
                     w.node("Properties70", {}, [&] {
                         w.string("Path", name);
-                        w.string("EDM_SourceImage", image.value("name", name));
+                        if (!modelOnly)
+                            w.string("EDM_SourceImage", image.value("name", name));
                     });
                     w.leaf("UseMipMap", {Property(int32_t(0))});
                     w.leaf("Filename", {Property(name)});
@@ -494,6 +535,7 @@ struct Encoder {
                     w.leaf("Content", {Property::blob(source.view(image.at("bufferView")))});
                 });
             }
+        }
         for (const auto& mat : doc().at("materials")) {
             int64_t uid = id();
             materials.push_back(uid);
@@ -515,22 +557,26 @@ struct Encoder {
                     w.scalar("Shininess", std::pow(1. - std::clamp(roughness, 0., 1.), 2.) * 100.);
                     w.scalar("SpecularFactor", .25);
                     w.scalar("ReflectionFactor", pbr.value("metallicFactor", 0.));
-                    w.string("EDM_AlphaMode", mat.value("alphaMode", "OPAQUE"));
-                    w.scalar("EDM_AlphaCutoff", mat.value("alphaCutoff", .5));
-                    w.scalar("EDM_RoughnessFactor", roughness);
-                    w.scalar("EDM_MetallicFactor", pbr.value("metallicFactor", 0.));
-                    if (opaque && pbr.contains("baseColorTexture")) {
-                        const auto& base = pbr.at("baseColorTexture");
-                        const size_t image =
-                            doc().at("textures").at(base.at("index").get<size_t>()).at("source");
-                        w.string("EDM_OriginalDiffuseImage", imageName(image));
-                        w.string("EDM_OpaqueDiffuseImage", imageName(image, true));
-                    }
-                    if (pbr.contains("metallicRoughnessTexture")) {
-                        auto& orm = pbr.at("metallicRoughnessTexture");
-                        size_t image = doc().at("textures").at(orm.at("index").get<size_t>()).at("source");
-                        w.string("EDM_ORMImage", imageName(image));
-                        w.string("EDM_ORMChannels", "R=occlusion, G=roughness, B=metallic; connect manually");
+                    if (!modelOnly) {
+                        w.string("EDM_AlphaMode", mat.value("alphaMode", "OPAQUE"));
+                        w.scalar("EDM_AlphaCutoff", mat.value("alphaCutoff", .5));
+                        w.scalar("EDM_RoughnessFactor", roughness);
+                        w.scalar("EDM_MetallicFactor", pbr.value("metallicFactor", 0.));
+                        if (opaque && pbr.contains("baseColorTexture")) {
+                            const auto& base = pbr.at("baseColorTexture");
+                            const size_t image =
+                                doc().at("textures").at(base.at("index").get<size_t>()).at("source");
+                            w.string("EDM_OriginalDiffuseImage", imageName(image));
+                            w.string("EDM_OpaqueDiffuseImage", imageName(image, true));
+                        }
+                        if (pbr.contains("metallicRoughnessTexture")) {
+                            auto& orm = pbr.at("metallicRoughnessTexture");
+                            size_t image =
+                                doc().at("textures").at(orm.at("index").get<size_t>()).at("source");
+                            w.string("EDM_ORMImage", imageName(image));
+                            w.string("EDM_ORMChannels",
+                                     "R=occlusion, G=roughness, B=metallic; connect manually");
+                        }
                     }
                 });
             });
@@ -541,7 +587,7 @@ struct Encoder {
                 if (!opaque)
                     connect(tex, uid, "TransparentColor");
             }
-            if (pbr.contains("metallicRoughnessTexture")) {
+            if (!modelOnly && pbr.contains("metallicRoughnessTexture")) {
                 auto& orm = pbr.at("metallicRoughnessTexture");
                 connect(texture(orm.at("index"), orm.value("texCoord", 0)), uid, "EDM_ORMImage");
             }
@@ -551,9 +597,11 @@ struct Encoder {
         object("Model", uid, node.value("name", "Node"), subtype, [&] {
             w.leaf("Version", {Property(int32_t(232))});
             w.node("Properties70", {}, [&] {
-                w.integer("RotationActive", 1, "bool");
-                w.integer("RotationOrder", 0, "enum");
-                w.integer("InheritType", 1, "enum"); // RSrs: ordinary parent * local composition.
+                if (!modelOnly) {
+                    w.integer("RotationActive", 1, "bool");
+                    w.integer("RotationOrder", 0, "enum");
+                    w.integer("InheritType", 1, "enum"); // RSrs: ordinary parent * local composition.
+                }
                 w.vector("Lcl Translation", vec3(node, "translation", V3::Zero()), "Lcl Translation");
                 w.vector("Lcl Rotation", eulerXYZ(nodeRotation(node)) * (180. / pi), "Lcl Rotation");
                 w.vector("Lcl Scaling", vec3(node, "scale", V3::Ones()), "Lcl Scaling");
@@ -729,10 +777,23 @@ struct Encoder {
             require(v < positions.count, "FBX triangle index out of bounds");
             polygons.push_back(i % 3 == 2 ? -int32_t(v) - 1 : int32_t(v));
         }
-        std::string name = node.value("name", "Mesh") + " / geometry " + std::to_string(part);
+        std::string name = node.value("name", "Mesh");
+        if (!modelOnly || part > 0)
+            name += " / geometry " + std::to_string(part);
         int64_t modelId = id(), geometryId = id();
+        if (modelOnly) {
+            require(!node.contains("skin") &&
+                        (!node.contains("children") || node.at("children").empty()) &&
+                        vec3(node, "translation", V3::Zero()).isZero(1e-12) &&
+                        (vec3(node, "scale", V3::Ones()) - V3::Ones()).isZero(1e-12) &&
+                        nodeRotation(node).head<3>().isZero(1e-12),
+                    "Pure FBX source must contain only baked, unparented mesh nodes");
+            for (const auto& [key, value] : attrs.items())
+                require(!key.starts_with("JOINTS_") && !key.starts_with("WEIGHTS_"),
+                        "Pure FBX source must not contain skin attributes");
+        }
         model(modelId, Json{{"name", name}}, "Mesh");
-        connect(modelId, models.at(ni));
+        connect(modelId, modelOnly ? 0 : models.at(ni));
         connect(materials.at(primitive.at("material").get<size_t>()), modelId);
         object("Geometry", geometryId, name, "Mesh", [&] {
             w.leaf("GeometryVersion", {Property(int32_t(124))});
@@ -817,12 +878,19 @@ struct Encoder {
                 });
         });
         connect(geometryId, modelId);
-        skin(geometryId, modelId, node, attrs, positions.count, bindReferenceWorld.at(ni));
+        if (!modelOnly)
+            skin(geometryId, modelId, node, attrs, positions.count, bindReferenceWorld.at(ni));
         ++meshCount;
         triangleCount += indices.count / 3;
     }
     void meshes() {
         const auto& nodes = doc().at("nodes");
+        if (modelOnly) {
+            require(!doc().contains("skins") && !doc().contains("animations"),
+                    "Pure FBX source must not contain skeletons or animations");
+            for (const auto& node : nodes)
+                require(node.contains("mesh"), "Pure FBX source must not contain empty nodes");
+        }
         for (size_t i = 0; i < nodes.size(); ++i)
             if (nodes[i].contains("mesh")) {
                 const auto& parts = doc().at("meshes").at(nodes[i].at("mesh").get<size_t>()).at("primitives");
@@ -1022,7 +1090,8 @@ struct Encoder {
                 w.leaf("C", std::move(p));
             }
         });
-        w.node("Takes", {}, [&] { w.leaf("Current", {Property("")}); });
+        if (!modelOnly)
+            w.node("Takes", {}, [&] { w.leaf("Current", {Property("")}); });
         w.footer();
     }
 };
@@ -1037,9 +1106,11 @@ Json exportFbxScene(const Scene& scene, const fs::path& path, const ExportOption
     encoder.metadata();
     encoder.w.node("Objects", {}, [&] {
         encoder.materialResources();
-        encoder.hierarchy();
+        if (!encoder.modelOnly)
+            encoder.hierarchy();
         encoder.meshes();
-        encoder.animations(progress);
+        if (!encoder.modelOnly)
+            encoder.animations(progress);
     });
     encoder.finish();
     encoder.w.check();
@@ -1069,6 +1140,18 @@ Json exportFbxScene(const Scene& scene, const fs::path& path, const ExportOption
           "in the receiving application. Alpha cutoff and DCS shader effects are application-dependent."},
          {"export_seconds", seconds(start)},
          {"output_bytes", encoder.w.data.size()}});
+    if (encoder.modelOnly) {
+        report["opaque_alpha_compatibility"] =
+            "OPAQUE diffuse materials use full-resolution RGB PNGs without alpha. The unused RGBA "
+            "original is omitted unless another transparent or ORM material slot requires it.";
+        report["material_limitations"] =
+            "FBX carries diffuse/alpha and embedded PNG images. RoughMet remains embedded as "
+            "image_N_RoughMet.png (R=occlusion, G=roughness, B=metallic); reconnect its channels in the "
+            "receiving application. Alpha cutoff and DCS shader effects are application-dependent.";
+        report.erase("rotation_baking");
+        report.erase("fbx_time_resolution_seconds");
+        report.erase("step_compatibility");
+    }
     // Embedded resources keep publication atomic: cancellation never replaces a previous complete FBX.
     writeFile(path, encoder.w.data);
     return report;

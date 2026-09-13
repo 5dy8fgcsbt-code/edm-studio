@@ -1,4 +1,6 @@
-# EDM Studio Native 0.12.2
+# EDM Studio Native 0.12.3
+
+0.12.3 将「只导出模型（纯网格）」升级为真正的纯模型导出：当前刚体与蒙皮姿态全部烘焙到顶点，保留实际网格、材质和贴图，移除骨架、动画、挂点、空节点和 DCS 自定义元数据；不生成 Lua 或 JSON 报告旁文件。GLB / glTF / FBX 导入 Blender 后仅包含网格物体，默认文件名加 `_model`。取消勾选仍可导出原有模型层级与参数动画。说明见[导出格式](docs/EXPORT_FORMATS.md)。
 
 0.12.2 在「导出」面板加入独立的「只导出模型（当前姿态）」复选框。勾选后同时固定起落架、舵面、舱盖及外挂的当前参数，不写入动画；GLB / glTF / FBX 保留层级与蒙皮，OBJ 固定为顶点。选项会自动保存，贴图导出仍可单独选择。操作见[导出格式说明](docs/EXPORT_FORMATS.md)。
 
@@ -29,7 +31,7 @@ Windows 原生 C++20 / Dear ImGui / Direct3D 11 桌面程序。直接打开 DCS 
 - 点击黄色（橙色）的已挂载连接点，在旁边出现“卸载”按钮；按下按钮才移除该处外挂及其下级。保留其他模型的绘制、撤销记录和动画姿态；被卸载物体有绘制时先保存恢复副本。
 - “显示外挂物体”控制所有外挂的预览：隐藏后不参与画笔拾取、贴花或相机投影的遮挡。已有绘制与撤销记录保留。主机和外挂可以一起绘制，模型导出始终包含已连接的外挂；勾选导出贴图后，同步保存统一 `description.lua` 和 DDS 涂装依赖。
 - [挂接与涂装操作说明](docs/ATTACHMENTS.md)包含逐级连接、保存重开、CLI 和同名材质的处理方式。
-- 涂装面板可设置机身编号、动态 Lua JSON 变量；导出面板先选格式，可勾选「只导出模型（当前姿态）」；取消勾选后可设置全部参数 / 当前参数动画及时长。贴图独立选择，OBJ 始终保存静态姿态。详见[导出格式说明](docs/EXPORT_FORMATS.md)。
+- 涂装面板可设置机身编号、动态 Lua JSON 变量；导出面板先选格式，可勾选「只导出模型（纯网格）」；取消勾选后可设置全部参数 / 当前参数动画及时长。贴图独立选择，OBJ 始终保存静态姿态。详见[导出格式说明](docs/EXPORT_FORMATS.md)。
 - 预览贴图上限可选 1024/2048/4096/8192，预算默认 2 GB。在“涂装 → 贴图质量”输入 0.25–100 GB，回车或点击“应用贴图预算”，自动保存并重新选择预览 mip。预览设置不影响导出；未编辑贴图保持原始分辨率，绘制贴图按画布实际分辨率输出。
 - 设置保存在 EXE 同目录的 `edm-studio.settings.json`。原创示例见 `samples/animation_demo.edm`。
 
@@ -44,6 +46,8 @@ RoughMet 的 R/G/B 对应环境遮蔽/粗糙度/金属度。NumberNode 编号图
 DCS 专用灯光、法线/效果着色器、环境反射、损伤和其他材质参数动画不能完整映射到通用 PBR。内部 LOD 当前全部保留；优先使用明确的单个 LOD 文件。含外观网格的 EDM 不叠加其内部碰撞壳，独立碰撞 EDM 则自动显示壳体。未知布局会明确报错。原始格式分析见 [读取与动画导出分析](docs/DCS_EDM_读取与动画导出分析.md)，旧版记录见 [0.3.4 参考](docs/LEGACY_0.3.4.md)。
 
 ## 构建与验证
+
+0.12.3 的 29 组回归全部通过，新增纯网格组包含 965 项检查，OBJ 组扩展为 642 项。FA-18C 四格式均已在 Blender 5.2.1 导入，只有网格物体；带贴图 FBX 包含 445 个网格、31 张图片，骨架与动画为零。其有效表面与独立 ufbx 姿态回读的双向最大误差约 `6.29e-7 m`。详情见[验证记录](docs/NATIVE_VALIDATION.md)。
 
 0.12.2 的 28 组回归全部通过，新增 38 项静态外挂导出检查。FA-18C 已完成四格式当前姿态导出，动画数量为零；FBX 独立回读 11,639 个顶点样本，最大位置误差约 `7.42e-7 m`。详情见[验证记录](docs/NATIVE_VALIDATION.md)。
 
@@ -70,7 +74,7 @@ DCS 专用灯光、法线/效果着色器、环境反射、损伤和其他材质
 ./build/native/Release/edm-native-cli.exe export 'path/to/model.edm' --output 'model.obj' --baseline 0=1,38=1
 ```
 
-CLI 支持 inspect、export、analyze、catalog、livery，以及 --livery、--context、--baseline、--bort、--static、--duration、--textures、--no-textures。`native/fetch-deps.ps1` 可重新获取固定版本依赖。原 Python 实现保留用于开发对照，原生运行和构建均不调用它。打包脚本输出版本目录及Windows/source ZIP；源码ZIP对应本地Git的HEAD，打包前应提交源代码。
+CLI 支持 inspect、export、analyze、catalog、livery，以及 --livery、--context、--baseline、--bort、--static、--model-only、--duration、--textures、--no-textures。`native/fetch-deps.ps1` 可重新获取固定版本依赖。原 Python 实现保留用于开发对照，原生运行和构建均不调用它。打包脚本输出版本目录及Windows/source ZIP；源码ZIP对应本地Git的HEAD，打包前应提交源代码。
 
 0.8.0 的 13 组回归、32,695 项检查通过。F-100D 的 OBJ 涂装及 F-100D、F-14 的 FBX 骨骼动画均已在 Blender 4.2.20 回读；F-14 全部 221 个 FBX 参数片段另用独立 ufbx 读取器对照源模型，1,106 个姿态、约 1,382 万顶点样本通过，最大位置误差约 `2.08e-6 m`。F-14 VF-103 完整涂装的嵌入图片也已验证。操作与格式限制见[导出格式说明](docs/EXPORT_FORMATS.md)。
 

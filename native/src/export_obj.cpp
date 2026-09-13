@@ -311,10 +311,12 @@ Json exportObjScene(const Scene& scene, const fs::path& path, const ExportOption
     mtl.imbue(std::locale::classic());
     obj << std::setprecision(17);
     mtl << std::setprecision(9);
-    obj << "# EDM Studio Wavefront OBJ\n# Units: metres; +Y up; static current pose\n"
-           "# Animation and skinning are baked into vertex positions.\nmtllib "
-        << pathString(transaction.material.filename()) << "\n";
-    mtl << "# EDM Studio Wavefront MTL\n# Diffuse and opacity only; DCS shader effects are not reproduced.\n";
+    if (!options.modelOnly) {
+        obj << "# EDM Studio Wavefront OBJ\n# Units: metres; +Y up; static current pose\n"
+               "# Animation and skinning are baked into vertex positions.\n";
+        mtl << "# EDM Studio Wavefront MTL\n# Diffuse and opacity only; DCS shader effects are not reproduced.\n";
+    }
+    obj << "mtllib " << pathString(transaction.material.filename()) << "\n";
     std::unique_ptr<TextureResolver> resolver;
     if (options.textures)
         resolver = std::make_unique<TextureResolver>(scene.source, options.textureDirectory, options.livery);
@@ -475,11 +477,20 @@ Json exportObjScene(const Scene& scene, const fs::path& path, const ExportOption
                    {"resolved_textures", resolver ? resolver->resolved : Json::object()},
                    {"livery", options.livery ? options.livery->metadata() : Json()},
                    {"export_seconds", seconds(start)}});
-    writeJson(reportPath, report);
+    if (options.modelOnly) {
+        report["model_only"] = true;
+        report["exported_skins"] = 0;
+        report.erase("report_path");
+    } else
+        writeJson(reportPath, report);
     cancelled(cancel);
     require(MoveFileExW(staged.c_str(), output.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH),
             "Cannot publish OBJ output; existing export was preserved");
     transaction.published = true;
+    if (options.modelOnly && !textureCount) {
+        std::error_code error;
+        fs::remove(transaction.directory, error); // Remove only the now-empty directory we created.
+    }
     return report;
 }
 } // namespace edm

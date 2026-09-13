@@ -1,3 +1,4 @@
+#include "attachment.h"
 #include "export.h"
 #include <iostream>
 #include <limits>
@@ -306,6 +307,149 @@ void texturesAndNumbers(const fs::path& root) {
     check(numbered.materialNames[0].find("_number") != std::string::npos,
           "Dynamic registration has its own material");
 }
+std::set<fs::path> directories(const fs::path& root) {
+    std::set<fs::path> result;
+    for (const auto& item : fs::recursive_directory_iterator(root))
+        if (item.is_directory())
+            result.insert(fs::relative(item.path(), root));
+    return result;
+}
+void modelOnlyBundle(const fs::path& path, bool textured) {
+    const Obj obj(path);
+    std::set<fs::path> required{fs::weakly_canonical(path), fs::weakly_canonical(obj.mtl)};
+    std::istringstream lines(text(obj.mtl));
+    std::string line;
+    size_t colorMaps = 0, opacityMaps = 0;
+    while (std::getline(lines, line)) {
+        std::istringstream fields(line);
+        std::string kind, name;
+        fields >> kind >> name;
+        if (kind != "map_Kd" && kind != "map_d")
+            continue;
+        const auto relative = fs::path(wide(name));
+        const auto image = fs::weakly_canonical(obj.mtl.parent_path() / relative);
+        check(relative.is_relative() && within(image, path.parent_path()) && image.extension() == ".png",
+              "Model-only OBJ material references only bounded relative PNG resources");
+        auto decoded = loadTexture({image}, 0);
+        check(decoded->pixels.GetImageCount() > 0, "Every pure OBJ texture is an actual decodable PNG");
+        required.insert(image);
+        colorMaps += kind == "map_Kd";
+        opacityMaps += kind == "map_d";
+    }
+    check(textured ? colorMaps > 0 && opacityMaps > 0 : colorMaps == 0 && opacityMaps == 0,
+          "Pure OBJ retains only the requested color/opacity maps");
+    size_t fileCount = 0;
+    for (const auto& item : fs::recursive_directory_iterator(path.parent_path())) {
+        if (item.is_regular_file()) {
+            ++fileCount;
+            check(required.contains(fs::weakly_canonical(item.path())),
+                  "Pure OBJ bundle contains only its OBJ, MTL and referenced PNGs, no Lua/JSON/orphan files");
+        } else if (item.is_directory())
+            check(textured && !fs::is_empty(item.path()),
+                  "Pure OBJ creates no empty texture directories, including --no-textures export");
+    }
+    check(fileCount == required.size(), "Every required pure OBJ resource exists exactly once");
+    obj.winding();
+}
+void modelOnly(const fs::path& root) {
+    auto base = fixture(root);
+    base.defaultArgs[7] = .1;
+    base.tracks.push_back({0, 7, Channel::Position,
+                           {{0, V4(2, 3, 4, 0)}, {1, V4(10, 3, 4, 0)}}});
+    base.limits[7] = {0, 1};
+    Node pylon;
+    pylon.name = "Pylon1";
+    pylon.parent = 0;
+    pylon.t = V3(3, 0, 0);
+    pylon.extras = {{"edm_type", "Connector"}};
+    base.nodes.push_back(pylon);
+    graph(base);
+    auto child = fixture(root);
+    child.materials[0].name = "Payload coating";
+    auto mount = pylon;
+    mount.name = "AttachPoint";
+    mount.t = V3(.5, 0, 0);
+    child.nodes.push_back(mount);
+    graph(child);
+    const auto assembled = attachScene(base, child, 1);
+    check(assembled->attachments.size() == 1, "Pure OBJ fixture exercises public attachment/livery export path");
+
+    ExportOptions options;
+    options.modelOnly = true;
+    options.textures = false;
+    options.arguments = std::vector<int>{7};
+    options.livery = std::make_shared<Livery>();
+    options.livery->args = {{7, .25}};
+    options.baseline[7] = .75;
+    const auto untextured = root / "no-textures" / "posed.obj";
+    const auto report = exportScene(*assembled, untextured, options);
+    modelOnlyBundle(untextured, false);
+    const Obj pose(untextured);
+    check(pose.vertices.size() == 6 && pose.faces.size() == 2, "Pure OBJ keeps base and attached visible mesh");
+    closeTo(pose.vertices[0].x(), 8, "Pure OBJ current baseline overrides livery and source default pose");
+    closeTo(pose.vertices[0].y(), 3, "Pure OBJ world pose retains translation");
+    closeTo(pose.vertices[3].x(), 10.5, "Pure OBJ bakes parent pose, pylon and inverse child AttachPoint");
+    check(report["model_only"] == true && report["exported_arguments"].empty() &&
+              !report.contains("report_path"), "Pure OBJ explicitly reports model-only without writing a report");
+
+    options.textures = true;
+    const auto painted = png({13, 57, 199, 81});
+    options.diffuseOverrides = {{0, painted}, {1, painted}};
+    const auto textured = root / "textured" / "painted.obj";
+    exportScene(*assembled, textured, options);
+    modelOnlyBundle(textured, true);
+    const Obj paintedObj(textured);
+    const auto paintedMaps = maps(paintedObj);
+    check(readFile(paintedMaps.at("map_Kd")) == painted, "Pure OBJ preserves edited diffuse PNG bytes");
+    const auto opacity = loadTexture({paintedMaps.at("map_d")}, 0);
+    closeTo(opacity->pixels.GetImage(0, 0, 0)->pixels[0], 81, "Pure OBJ retains required opacity image", 0);
+    const auto originalFiles = snapshot(textured.parent_path());
+    const auto originalDirectories = directories(textured.parent_path());
+    auto changed = options;
+    changed.baseline[7] = .4;
+    changed.diffuseOverrides[0] = png({200, 30, 90, 100});
+    std::atomic_bool cancel = true;
+    rejects([&] { exportScene(*assembled, textured, changed, {}, &cancel); },
+            "Pre-cancelled pure OBJ export is rejected through the public export API");
+    check(snapshot(textured.parent_path()) == originalFiles &&
+              directories(textured.parent_path()) == originalDirectories,
+          "Pre-cancel preserves original pure OBJ model, materials, textures and directory inventory");
+    cancel = false;
+    rejects([&] { exportScene(*assembled, textured, changed, [&](const auto&) { cancel = true; }, &cancel); },
+            "Pure OBJ cancellation after the first staged mesh aborts before publication");
+    check(snapshot(textured.parent_path()) == originalFiles &&
+              directories(textured.parent_path()) == originalDirectories,
+          "Mid-export cancellation preserves all original files and removes staged files/directories");
+
+    auto numberedScene = base;
+    numberedScene.meshes[0].selectors = {0, 0, 0};
+    numberedScene.meshes[0].numbers = {{31, 32, 2, 3}};
+    TextureRef atlasRef{3, "original_atlas"};
+    atlasRef.matrix(0, 3) = .05;
+    numberedScene.materials[0].textures.push_back(atlasRef);
+    numberedScene.materials[0].uniforms["decalShift"] = {.01, .02};
+    const auto inputs = root / "inputs";
+    fs::create_directories(inputs);
+    saveText(inputs / "description.lua", "livery={}");
+    const auto atlas = png({221, 71, 31, 140});
+    writeFile(inputs / "atlas.png", atlas);
+    options.livery->path = inputs / "description.lua";
+    options.livery->textures[{lower(numberedScene.materials[0].name), 3}] =
+        {numberedScene.materials[0].name, "atlas.png", 3, false};
+    options.livery->args[31] = .1;
+    options.livery->args[32] = .2;
+    options.baseline[31] = .3;
+    const auto numbered = root / "numbers" / "numbered.obj";
+    exportScene(numberedScene, numbered, options);
+    modelOnlyBundle(numbered, true);
+    const Obj number(numbered);
+    check(readFile(maps(number).at("map_Kd")) == atlas,
+          "Pure OBJ uses current livery number atlas instead of painted body texture");
+    closeTo(number.uv[0][0], .66, "Pure OBJ number U bakes atlas transform, decal shift and current baseline");
+    closeTo(number.uv[0][1], .38, "Pure OBJ number V bakes livery argument and OBJ V convention");
+    closeTo(number.vertices[0].x(), 8, "Pure OBJ registration preserves current position argument");
+    closeTo(number.vertices[0].z(), 4.0002, "Pure OBJ registration preserves current pose and surface offset");
+}
 void invalidAndAtomic(const fs::path& root) {
     fs::create_directories(root);
     auto scene = fixture(root);
@@ -377,6 +521,7 @@ int wmain() {
         basicAndPose(root / "pose");
         normalsAndSkin(root / "skin");
         texturesAndNumbers(root / "textures");
+        modelOnly(root / "model-only");
         invalidAndAtomic(root / "atomic");
         std::cout << "OBJ export tests passed: " << checks << " checks\n";
         return 0;

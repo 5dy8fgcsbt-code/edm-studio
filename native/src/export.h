@@ -5,6 +5,7 @@ struct ExportOptions {
     std::optional<std::vector<int>> arguments;
     double duration = 3;
     bool textures = true;
+    bool modelOnly = false; // Bake the current pose to meshes; omit rig, helpers and sidecar metadata.
     fs::path textureDirectory;
     std::shared_ptr<Livery> livery;
     Args baseline;

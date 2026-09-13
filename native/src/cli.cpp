@@ -13,7 +13,7 @@ int wmain(int argc, wchar_t** argv) {
         require(argc >= 3,
                 "Usage: edm-native-cli inspect|export|analyze|catalog|livery model.edm [--output path] "
                 "[--args 0,3,9] [--baseline 0=1,3=0] [--bort 123] [--livery path] [--context "
-                "JSON] [--textures dir] [--extra dir] [--no-textures] [--static] [--duration 3] "
+                "JSON] [--textures dir] [--extra dir] [--no-textures] [--static|--model-only] [--duration 3] "
                 "[--dump-world path] [--attach connector=child.edm] [--hide-attachments]. "
                 "Repeat --attach for nested mounts; #nodeIndex resolves duplicate connector names. "
                 "Export extensions: .glb, .gltf, .obj (current static pose), .fbx");
@@ -59,6 +59,8 @@ int wmain(int argc, wchar_t** argv) {
                 options.duration = std::stod(value());
             else if (key == "--static")
                 options.arguments = std::vector<int>{};
+            else if (key == "--model-only")
+                options.modelOnly = true;
             else if (key == "--args") {
                 options.arguments = std::vector<int>{};
                 std::istringstream ss(value());

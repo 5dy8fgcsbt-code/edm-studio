@@ -117,9 +117,12 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
         if (cancel && *cancel)
             throw std::runtime_error("Cancelled");
     };
-    require(std::isfinite(options.duration) && options.duration > 0, "Animation duration must be positive");
+    require(options.modelOnly || (std::isfinite(options.duration) && options.duration > 0),
+            "Animation duration must be positive");
     std::vector<int> arguments;
-    if (options.arguments)
+    if (options.modelOnly) {
+        // This mode always freezes all arguments, regardless of the animation scope.
+    } else if (options.arguments)
         arguments = *options.arguments;
     else
         for (auto [a, r] : scene.limits)
@@ -536,6 +539,8 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
     d["extras"] = {{"edm_studio", extra}};
     d["buffers"] = Json::array({{{"byteLength", b.data.size()}}});
     check();
+    if (options.modelOnly)
+        return bakeModelOnlyPayload({std::move(d), std::move(b.data), std::move(report)}, progress, cancel);
     return {std::move(d), std::move(b.data), std::move(report)};
 }
 static Json exportModelScene(const Scene& scene, const fs::path& path, const ExportOptions& options,
@@ -576,7 +581,8 @@ static Json exportModelScene(const Scene& scene, const fs::path& path, const Exp
     writeFile(path, output);
     auto reportPath = path;
     reportPath.replace_extension(L".report.json");
-    writeJson(reportPath, payload.report);
+    if (!options.modelOnly)
+        writeJson(reportPath, payload.report);
     return payload.report;
 }
 Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& options, Progress progress,
@@ -587,7 +593,7 @@ Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& 
     Json assets;
     // Resolve DCS material-name conflicts before publishing a model. The original-format DDS
     // sidecar is intentionally independent of the PNG resources used by interchange formats.
-    if (!scene.attachments.empty() && options.textures)
+    if (!options.modelOnly && !scene.attachments.empty() && options.textures)
         assets = exportLiveryAssetsFromPng(scene, options.diffuseOverrides, fs::absolute(path).parent_path(),
                                            pathString(path.stem()), options.livery, options.textureDirectory,
                                            progress, cancel);
