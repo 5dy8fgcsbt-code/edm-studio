@@ -295,7 +295,9 @@ AnimationAnalysis analyzeAnimations(const Scene& scene, const Args& baseline, co
         }
     std::vector<SampleMesh> samples;
     const size_t nonEmpty = std::count_if(scene.meshes.begin(), scene.meshes.end(),
-                                          [](const auto& mesh) { return !mesh.positions.empty(); });
+                                          [](const auto& mesh) {
+                                              return mesh.lodActive && !mesh.positions.empty();
+                                          });
     const size_t each =
         std::min(options.maxSamplesPerMesh,
                  std::max(size_t(1), options.maxVertexSamples / std::max(size_t(1), nonEmpty)));
@@ -303,7 +305,7 @@ AnimationAnalysis analyzeAnimations(const Scene& scene, const Args& baseline, co
     for (size_t m = 0; m < scene.meshes.size(); ++m) {
         cancelled(cancel);
         const auto& mesh = scene.meshes[m];
-        if (mesh.positions.empty() || result.sampledVertices >= options.maxVertexSamples)
+        if (!mesh.lodActive || mesh.positions.empty() || result.sampledVertices >= options.maxVertexSamples)
             continue;
         SampleMesh selection;
         selection.mesh = int(m);

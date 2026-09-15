@@ -588,7 +588,7 @@ PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args,
     impl->cache.resize(impl->scene->meshes.size());
     size_t possible = 0;
     for (const auto& mesh : impl->scene->meshes)
-        if (attachmentsVisible || !mesh.extras.contains("edm_attachment"))
+        if (mesh.lodActive && (attachmentsVisible || !mesh.extras.contains("edm_attachment")))
             possible += mesh.indices.size() / 3;
     require(possible <= std::numeric_limits<uint32_t>::max(), "Paint geometry exceeds index range");
     impl->primitives.reserve(possible);
@@ -600,7 +600,7 @@ PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args,
         const auto& mesh = impl->scene->meshes[mi];
         // Visibility is an explicit geometric exclusion, not just a zero-scale transform.
         // In particular, skin bones can otherwise leave pickable geometry outside a hidden root.
-        if (!attachmentsVisible && mesh.extras.contains("edm_attachment"))
+        if (!mesh.lodActive || (!attachmentsVisible && mesh.extras.contains("edm_attachment")))
             continue;
         auto& cache = impl->cache[mi];
         require(mesh.material >= 0 && mesh.material < int(impl->scene->materials.size()),

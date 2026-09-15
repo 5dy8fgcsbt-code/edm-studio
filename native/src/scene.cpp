@@ -44,6 +44,56 @@ struct Build {
     std::map<std::pair<int, std::vector<int>>, int> gates;
     std::map<std::vector<int>, std::map<int, int>> clones;
     std::map<int, Track> trackMap;
+    std::vector<bool> lodActive;
+    std::vector<int> selectedLods;
+    void selectLods() {
+        const int count = int(d.nodes.size());
+        std::vector<std::vector<int>> children(count);
+        std::vector<int> pending;
+        selectedLods.assign(count, -1);
+        lodActive.assign(count, true);
+        for (int i = 0; i < count; ++i) {
+            const int parent = d.nodes[i].parent;
+            require(parent >= -1 && parent < count, "Invalid LOD hierarchy parent");
+            if (parent < 0)
+                pending.push_back(i);
+            else
+                children[parent].push_back(i);
+        }
+        for (int i = 0; i < count; ++i) {
+            if (d.nodes[i].type != "LodNode")
+                continue;
+            const auto& levels = d.nodes[i].extras.at("levels");
+            require(!levels.empty() && levels.size() == children[i].size(),
+                    "LOD 距离层级与子节点数量不一致，无法安全选择模型精度（节点 " +
+                        std::to_string(i) + "）");
+            // EDM associates ranges with direct children in source order. Choose
+            // the nearest range, not a name such as LOD0 or mesh complexity.
+            int selected = -1;
+            for (int j = 0; j < int(levels.size()); ++j) {
+                const auto candidate = std::pair{levels[j][0].get<double>(), levels[j][1].get<double>()};
+                if (candidate.second <= candidate.first)
+                    continue;
+                if (selected < 0 || candidate < std::pair{levels[selected][0].get<double>(),
+                                                         levels[selected][1].get<double>()})
+                    selected = j;
+            }
+            require(selected >= 0, "LOD 没有非空距离范围（节点 " + std::to_string(i) + "）");
+            selectedLods[i] = selected;
+        }
+        int visited = 0;
+        while (!pending.empty()) {
+            const int i = pending.back();
+            pending.pop_back();
+            ++visited;
+            for (int j = 0; j < int(children[i].size()); ++j) {
+                const int child = children[i][j];
+                lodActive[child] = lodActive[i] && (selectedLods[i] < 0 || selectedLods[i] == j);
+                pending.push_back(child);
+            }
+        }
+        require(visited == count, "Scene graph cycle in LOD hierarchy");
+    }
     int add(std::string name, int parent, Json extras = Json::object()) {
         Node n;
         n.name = std::move(name);
@@ -112,12 +162,17 @@ struct Build {
         return n;
     }
     void nodes() {
+        selectLods();
         add(pathString(s.source.stem()), -1,
             {{"edm_version", s.version}, {"units", "metres"}, {"up_axis", "Y"}});
         for (int i = 0; i < int(d.nodes.size()); i++) {
             auto& n = d.nodes[i];
             auto name = n.name.empty() ? n.type + " " + std::to_string(i) : n.name;
             int h = add(name, 0, {{"edm_node", i}, {"edm_type", n.type}, {"edm_properties", n.props}}), p = h;
+            // Source heads are never animation track targets. Their fixed gate
+            // also survives visibility revealing, skin cloning and attachments.
+            if (!lodActive[i])
+                s.nodes[h].s = V3::Zero();
             if (n.animated()) {
                 p = affine(p, name + " / matrix", n.matrix);
                 p = factor(p, name + " / position", Channel::Position, v4(n.position));
@@ -148,7 +203,7 @@ struct Build {
                         "Non-identity visibility extension matrix is not yet verified");
             } else if (n.type == "LodNode") {
                 s.nodes[h].extras["edm_lod_levels"] = n.extras["levels"];
-                s.warn("内部 LOD 保留所有层级；可在目标软件中筛选。");
+                s.nodes[h].extras["edm_lod_selected_level"] = selectedLods[i];
             } else if (n.type == "BillboardNode")
                 s.warn("Billboard 随相机朝向的行为未导出。");
             s.heads.push_back(h);
@@ -251,6 +306,9 @@ struct Build {
         bool skin = r.type == "SkinNode";
         if (skin)
             require(!r.bones.empty(), "Missing skin bones");
+        const int lodParent = skin ? r.bones[0] : p;
+        require(lodParent >= -1 && lodParent < int(lodActive.size()), "Invalid LOD mesh parent/bone");
+        m.lodActive = lodParent < 0 || lodActive[lodParent];
         auto cond = conditions(skin ? r.bones[0] : p);
         m.node = add(m.name, skin ? -1 : gate(p >= 0 ? s.tails[p] : 0, cond), m.extras);
         std::vector<uint32_t> used = ids;
@@ -339,6 +397,16 @@ struct Build {
                     n.normalize();
                 m.normals[i] = {float(n[0]), float(n[1]), float(n[2])};
             }
+        }
+        if (skin && m.lodActive) {
+            // Some skins use a shared bone 0 outside the LOD tree. In that case
+            // inspect actual positive influences rather than unused palette entries.
+            bool activeInfluence = false;
+            for (size_t i = 0; i < m.weights.size() && !activeInfluence; ++i)
+                for (int k = 0; k < 8; ++k)
+                    if (m.weights[i][k] > 0 && lodActive.at(r.bones.at(m.joints[i][k])))
+                        activeInfluence = true;
+            m.lodActive = activeInfluence;
         }
         double total = 0, evidence = 0, reverse = 0;
         for (size_t i = 0; i < m.indices.size(); i += 3) {
@@ -507,6 +575,8 @@ struct Build {
         require(s.order.size() == s.nodes.size(), "Scene graph cycle");
         s.defaultWorld = s.evaluate({});
         require(!s.meshes.empty(), "文件没有可导出的三角网格（外观与碰撞壳体均无三角形）");
+        require(std::any_of(s.meshes.begin(), s.meshes.end(), [](const Mesh& mesh) { return mesh.lodActive; }),
+                "最高精度 LOD 没有可用三角网格");
         if (d.collisionCount && !s.collisionOnly())
             s.warn("碰撞壳体未加入可见模型。");
         if (d.collisionLineCount)
@@ -585,10 +655,14 @@ bool Scene::collisionOnly() const {
 }
 Json Scene::summary() const {
     size_t tris = 0, vertices = 0, skins = 0, winding = 0, collisionMeshes = 0, collisionTris = 0;
+    size_t activeMeshes = 0, activeTris = 0;
     for (auto& m : meshes) {
         tris += m.indices.size() / 3;
         vertices += m.positions.size();
         skins += m.skinned();
+        activeMeshes += m.lodActive;
+        if (m.lodActive)
+            activeTris += m.indices.size() / 3;
         winding += m.extras.value("edm_winding_reversed", false);
         if (m.extras.value("edm_is_collision", false)) {
             ++collisionMeshes;
@@ -622,6 +696,10 @@ Json Scene::summary() const {
         {"graph_nodes", nodes.size()},
         {"render_types", renderTypes},
         {"export_meshes", meshes.size()},
+        {"lod_policy", "highest_detail"},
+        {"lod_active_meshes", activeMeshes},
+        {"lod_active_triangles", activeTris},
+        {"lod_excluded_meshes", meshes.size() - activeMeshes},
         {"triangles", tris},
         {"vertices", vertices},
         {"skinned_meshes", skins},

@@ -110,6 +110,8 @@ void Camera::fit(const Scene& scene, const Args& args) {
     auto world = scene.evaluate(args);
     V3 lo = V3::Constant(1e100), hi = V3::Constant(-1e100);
     for (auto& mesh : scene.meshes) {
+        if (!mesh.lodActive)
+            continue;
         auto positions = scene.transformed(mesh, world);
         for (auto& p : positions) {
             V3 v(p[0], p[1], p[2]);
@@ -140,6 +142,8 @@ std::shared_ptr<GpuModel> GpuModel::prepare(ID3D11Device* device, std::shared_pt
     out->scene = scene;
     size_t vertexCount = 0, indexCount = 0;
     for (auto& m : scene->meshes) {
+        if (!m.lodActive)
+            continue;
         vertexCount += m.positions.size();
         indexCount += m.indices.size();
     }
@@ -174,6 +178,13 @@ std::shared_ptr<GpuModel> GpuModel::prepare(ID3D11Device* device, std::shared_pt
         draw.index = UINT(mi);
         draw.maximumWeightMagnitude = mesh.skinned() ? 0 : 1;
         draw.transparent = !data.decal && materialAlphaMode(mat) == MaterialAlphaMode::Blend;
+        if (!mesh.lodActive) {
+            draw.count = 0;
+            draw.visible = false;
+            out->data.push_back(data);
+            out->draws.push_back(draw);
+            continue;
+        }
         auto uv = textureUV(mesh, mat, 0), rm = textureUV(mesh, mat, 13), decal = textureUV(mesh, mat, 3);
         V3 lo = V3::Constant(1e100), hi = V3::Constant(-1e100);
         for (size_t i = 0; i < mesh.positions.size(); i++) {
@@ -251,7 +262,9 @@ void GpuModel::update(ID3D11DeviceContext* context, const Args& args, bool attac
     posedMax = -posedMin;
     for (size_t mi = 0; mi < scene->meshes.size(); mi++) {
         auto& m = scene->meshes[mi];
-        draws[mi].visible = attachmentsVisible || !m.extras.contains("edm_attachment");
+        draws[mi].visible = m.lodActive && (attachmentsVisible || !m.extras.contains("edm_attachment"));
+        if (!m.lodActive)
+            continue;
         size_t base = data[mi].transform;
         if (m.skinned()) {
             for (size_t j = 0; j < m.skinNodes.size(); j++)
@@ -919,7 +932,8 @@ Json Renderer::verifyGpu(const Args& args) {
        "GPU validation stream-output shader");
     size_t count = 0;
     for (auto& mesh : model->scene->meshes)
-        count += mesh.positions.size();
+        if (mesh.lodActive)
+            count += mesh.positions.size();
     auto output = buffer(device.Get(), count * 12, D3D11_BIND_STREAM_OUTPUT);
     UINT strides[2]{sizeof(GpuVertex), 4}, offsets[2]{};
     ID3D11Buffer* vbs[]{model->vertices.Get(), model->instances.Get()};
@@ -935,8 +949,9 @@ Json Renderer::verifyGpu(const Args& args) {
     UINT offset = 0;
     context->SOSetTargets(1, output.GetAddressOf(), &offset);
     for (auto& draw : model->draws)
-        context->DrawInstanced(UINT(model->scene->meshes[draw.index].positions.size()), 1, draw.base,
-                               draw.index);
+        if (model->scene->meshes[draw.index].lodActive)
+            context->DrawInstanced(UINT(model->scene->meshes[draw.index].positions.size()), 1, draw.base,
+                                   draw.index);
     ID3D11Buffer* nullBuffer = nullptr;
     context->SOSetTargets(1, &nullBuffer, &offset);
     context->GSSetShader(nullptr, nullptr, 0);
@@ -955,6 +970,8 @@ Json Renderer::verifyGpu(const Args& args) {
     double maximum = 0;
     bool finite = true;
     for (auto& mesh : model->scene->meshes) {
+        if (!mesh.lodActive)
+            continue;
         auto expected = model->scene->transformed(mesh, model->world);
         for (auto& vertex : expected) {
             for (int k = 0; k < 3; k++) {

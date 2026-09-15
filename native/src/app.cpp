@@ -430,7 +430,9 @@ class App {
                         names += name + "\n";
                 }
                 notice = (scene.collisionOnly() ? "碰撞模型已载入 · " : "模型已载入 · ") +
-                         std::to_string(scene.meshes.size()) + " 个网格";
+                         std::to_string(std::count_if(scene.meshes.begin(), scene.meshes.end(),
+                                                      [](const auto& mesh) { return mesh.lodActive; })) +
+                         " 个网格";
                 record(scene.summary().dump(2));
                 applyInitialArguments();
                 if (!paintMaterial.empty() || !autoPaintDirectory.empty() || !decalTestDirectory.empty() ||
@@ -1591,9 +1593,12 @@ class App {
                              hint.c_str());
         } else {
             char stats[140];
-            std::snprintf(stats, sizeof(stats), "%s triangles  ·  %zu meshes",
+            const bool hasLods =
+                std::any_of(renderer.model->scene->meshes.begin(), renderer.model->scene->meshes.end(),
+                             [](const auto& mesh) { return !mesh.lodActive; });
+            std::snprintf(stats, sizeof(stats), "%s triangles  ·  %zu meshes%s",
                           compactNumber(renderer.visibleTriangles).c_str(),
-                          renderer.model->scene->meshes.size());
+                          size_t(renderer.drawCalls), hasLods ? "  ·  最高精度 LOD" : "");
             overlay->AddText({origin.x + 16, origin.y + 14}, IM_COL32(151, 178, 211, 230), stats);
             if (renderer.model->scene->collisionOnly())
                 overlay->AddText({origin.x + 16, origin.y + 36}, IM_COL32(111, 192, 224, 235),

@@ -127,6 +127,9 @@ struct Track {
 struct Mesh {
     std::string name;
     int node = 0, material = 0;
+    // Keep source mesh indices/UVs stable for saved painting projects. Only the
+    // nearest-distance branch of each internal LOD group participates in work.
+    bool lodActive = true;
     std::vector<F3> positions, normals;
     std::vector<uint32_t> indices;
     std::vector<std::vector<F2>> uvs;

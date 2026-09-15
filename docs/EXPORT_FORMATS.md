@@ -4,6 +4,8 @@
 
 已连接的外挂会与主模型一起导出。普通模式包含 Pylon / Point 层级及各自动画，开启贴图导出时还会生成独立涂装目录，统一保存 description.lua、DDS 与 RoughMet。纯网格模式只保留外挂的实际几何与贴图，不生成挂点节点或涂装配置。下方的“显示外挂物体”仅影响预览和绘制遮挡；导出保留整个组合。详见[挂接与涂装](ATTACHMENTS.md)。
 
+从 0.12.4 起，内部 LOD 自动按距离范围选择最高精度分支。多个或嵌套 LOD 组独立处理，外挂同样适用。预览、绘制和导出使用相同选择，低精度模型不会再叠在一起；原始网格编号、UV 和材质保持不变，已保存的涂装工程可以继续加载。此选择自动生效，无需手动删除 LOD。
+
 | 格式 | 几何与动画 | 贴图与用途 |
 |---|---|---|
 | GLB / glTF 2.0 | 层级、8 权重蒙皮、每参数动画、STEP 显隐与编号 | 嵌入 PNG；RoughMet 转为标准 PBR；适合网页和现代工具 |
@@ -11,6 +13,8 @@
 | FBX 7.4 二进制 | 层级、8 权重蒙皮、独立动画片段、STEP 显隐与编号 | 嵌入 PNG；适合需要 FBX 动画的工具 |
 
 ## 只导出模型（纯网格）
+
+若用 Substance 3D Painter 绘制原 DCS 涂装，通常应在新建项目中取消 `Use UV Tile workflow`，保留原 UV，不要重新展开全部 UV。部分源模型会重复使用或越出 0–1 UV 范围，并不等同于 UDIM 布局；跨 UV 格子的面在 UDIM 导入时可能报错。LOD 修复排除了 AIM-9 低精度分支中的这类面，但不会自动改写其他模型原有的 UV。参考 [Adobe 项目创建](https://experienceleague.adobe.com/en/docs/substance-3d-painter/using/getting-started/project-creation)及[相同报错的官方支持回复](https://community.adobe.com/questions-59/substance-3d-painter-won-t-load-my-3d-models-627830)。本机没有 Painter，兼容性结论以实际验证的软件与样本为限。
 
 先在预览中调整起落架、舵面、舱盖等参数，在右侧「导出」勾选「只导出模型（纯网格）」，再点击「导出纯模型」。所有参数组合与蒙皮变形都固定到顶点，当前编号固定到 UV；默认文件名加 `_model`。导入 Blender 后只有网格物体，不再出现 Armature、空物体、骨骼锥体或父子辅助线。
 

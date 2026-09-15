@@ -227,6 +227,8 @@ class Parser {
             n.extras["levels"] = Json::array();
             for (auto c = count(16); c--;) {
                 double lo = get<double>(), hi = get<double>();
+                require(std::isfinite(lo) && std::isfinite(hi) && lo >= 0 && hi >= lo,
+                        "Invalid LOD squared distance interval");
                 n.extras["levels"].push_back({std::sqrt(std::max(0., lo)), std::sqrt(std::max(0., hi))});
             }
         } else if (t == "BillboardNode")

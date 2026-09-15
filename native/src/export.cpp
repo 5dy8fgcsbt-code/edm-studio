@@ -278,6 +278,8 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
     for (size_t mi = 0; mi < scene.meshes.size(); mi++) {
         check();
         auto& mesh = scene.meshes[mi];
+        if (!mesh.lodActive)
+            continue;
         auto& mat = scene.materials[mesh.material];
         auto& material = d["materials"][mesh.material];
         Json attrs = {{"POSITION", b.acc(mesh.positions, 3, 5126, "VEC3", 34962, true)},
