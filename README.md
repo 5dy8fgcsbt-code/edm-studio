@@ -1,5 +1,7 @@
 # EDM Studio Native 0.13.0
 
+**简体中文** | [English](README.en.md)
+
 0.13.0 新增完整英文语言包。窗口右上方的语言菜单可选择 **简体中文 / English**，选择后自动保存，重启生效；重启前请先保存绘制工程。语言仅影响界面、提示和生成的默认名称，不会翻译模型节点、材质名、涂装名称、路径或 Lua 配置键。
 
 **English:** Select **English** in the language menu at the top right, save your paint project, then restart. The UI, painting tools, animation analysis, dialogs and export messages are translated. Model names, material names, user-created layer names, livery names and Lua keys are kept unchanged. The GUI saves your choice; the CLI accepts `--language en-US` after the model path. Use `--language zh-CN` for Chinese.
@@ -51,7 +53,7 @@ GLB / glTF / FBX 将 EDM 参数范围转换为每参数独立的时间片段，�
 
 RoughMet 的 R/G/B 对应环境遮蔽/粗糙度/金属度。NumberNode 编号图集转换为标准 STEP 显隐节点。动态 Lua 使用内嵌 Lua 5.4.8 的独立子进程，支持函数、循环、条件及目录范围内的 dofile/require；内存、指令和 5 秒时间上限防止错误配置阻塞界面。
 
-DCS 专用灯光、法线/效果着色器、环境反射、损伤和其他材质参数动画不能完整映射到通用 PBR。内部 LOD 当前全部保留；优先使用明确的单个 LOD 文件。含外观网格的 EDM 不叠加其内部碰撞壳，独立碰撞 EDM 则自动显示壳体。未知布局会明确报错。原始格式分析见 [读取与动画导出分析](docs/DCS_EDM_读取与动画导出分析.md)，旧版记录见 [0.3.4 参考](docs/LEGACY_0.3.4.md)。
+DCS 专用灯光、法线/效果着色器、环境反射、损伤和其他材质参数动画不能完整映射到通用 PBR。内部 LOD 从 0.12.4 起自动选择最高精度分支用于预览、绘制和导出，原始网格编号仍保留以兼容工程。含外观网格的 EDM 不叠加其内部碰撞壳，独立碰撞 EDM 则自动显示壳体。未知布局会明确报错。原始格式分析见 [读取与动画导出分析](docs/DCS_EDM_读取与动画导出分析.md)，旧版记录见 [0.3.4 参考](docs/LEGACY_0.3.4.md)。
 
 ## 构建与验证
 
@@ -106,7 +108,7 @@ CLI 支持 inspect、export、analyze、catalog、livery，以及 --livery、--c
 
 右侧“绘制”页始终提供“浏览 / 直接画笔 / 贴花 / 相机投影”，无需先选材质或建立画布。选“直接画笔”后在模型上按住左键，软件按落笔位置异步匹配当前涂装的漫反射贴图，笔迹可连续跨越材质和UV接缝。贴图加载期间保留笔迹队列，整笔完成后可一次撤销或重做。右键旋转，中键平移；支持世界半径、硬度、不透明度和保留原透明遮罩。
 
-新画布分辨率上限默认2K，可选4K或8K；切换设置不会重采样已经编辑的画布。可预载PNG/DDS/TGA/JPG等平面模板，下一次落笔位置决定模板对应的贴图，模板替换该贴图的当前图层内容，原始底图保留，可撤销。添加局部图案时使用“贴花”或“相机投影”。PSD图层需先导出平面PNG。
+新画布默认保留原图尺寸，最高8K，可选4K或2K以节省内存；切换设置不会重采样已经编辑的画布。可预载PNG/DDS/TGA/JPG等平面模板，下一次落笔位置决定模板对应的贴图，模板替换该贴图的当前图层内容，原始底图保留，可撤销。添加局部图案时使用“贴花”或“相机投影”。PSD图层需先导出平面PNG。
 
 “保存工程与DCS涂装”在所选目录中新建完整文件夹，含PNG工程、带mip的DDS、依赖贴图与description.lua；可将其放入正确机型的Liveries目录，也可在本软件重新导入。GLB、glTF、OBJ 和 FBX 的贴图导出均包含当前绘制结果。未保存编辑在切换模型/关闭前写入EXE旁PaintRecovery恢复工程；保存失败会保留窗口。恢复工程通过“打开绘制工程”读取。
 
