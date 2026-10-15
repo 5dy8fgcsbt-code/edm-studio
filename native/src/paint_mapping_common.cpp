@@ -70,9 +70,9 @@ void Operation::check() {
     if (cancel && cancel->load(std::memory_order_relaxed))
         throw std::runtime_error("Image mapping cancelled");
     if (edm::seconds(started) > limits.seconds)
-        throw std::runtime_error("图片映射超过时间预算，此次操作已回滚；请缩小覆盖范围或降低新贴图精度。");
+        throw std::runtime_error(edm::tr("图片映射超过时间预算，此次操作已回滚；请缩小覆盖范围或降低新贴图精度。"));
     if (progress && report.rasterSamples >= nextProgress) {
-        progress("映射像素 " + std::to_string(report.paintedPixels) + "，采样 " +
+        progress(edm::tr("映射像素 ") + std::to_string(report.paintedPixels) + edm::tr("，采样 ") +
                  std::to_string(report.rasterSamples));
         nextProgress = report.rasterSamples + 65536;
     }
@@ -111,9 +111,9 @@ PaintMappingReport Operation::finish() {
     report.seconds = edm::seconds(started);
     if (report.reusedTexels)
         report.warnings.push_back(
-            "共享或重复 UV 只写入一次；优先处理靠近外层的面，共用 UV 的部件会同时显示修改。");
+            edm::tr("共享或重复 UV 只写入一次；优先处理靠近外层的面，共用 UV 的部件会同时显示修改。"));
     if (!report.paintedPixels)
-        report.warnings.push_back("没有像素被修改：检查目标材质、图片范围、表面朝向和遮挡设置。");
+        report.warnings.push_back(edm::tr("没有像素被修改：检查目标材质、图片范围、表面朝向和遮挡设置。"));
     return std::move(report);
 }
 

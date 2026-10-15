@@ -1,35 +1,35 @@
 // Included inside PaintCanvas::Impl. All publication paths below allocate before touching pixels.
 static void validateLayers(const std::vector<PaintLayerInfo>& infos, uint64_t selected) {
-    require(!infos.empty() && infos.size() <= 64, "涂装必须包含 1 至 64 个图层");
+    require(!infos.empty() && infos.size() <= 64, edm::tr("涂装必须包含 1 至 64 个图层"));
     std::set<uint64_t> ids;
     for (const auto& info : infos) {
         require(info.id && info.id != UINT64_MAX && ids.insert(info.id).second,
-                "图层 ID 必须非零、唯一且小于 UINT64_MAX");
+                edm::tr("图层 ID 必须非零、唯一且小于 UINT64_MAX"));
         require(!info.name.empty() && info.name.size() <= 256 &&
                     MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, info.name.data(),
                                         int(info.name.size()), nullptr, 0) > 0,
-                "图层名称必须是有效 UTF-8，长度为 1 至 256 字节");
+                edm::tr("图层名称必须是有效 UTF-8，长度为 1 至 256 字节"));
         std::array<wchar_t, 256> wideName{};
         int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, info.name.data(),
                                          int(info.name.size()), wideName.data(), int(wideName.size()));
         std::array<WORD, 256> characterTypes{};
         require(GetStringTypeW(CT_CTYPE1, wideName.data(), length, characterTypes.data()) != 0,
-                "无法验证图层名称");
+                edm::tr("无法验证图层名称"));
         bool text = false;
         for (int i = 0; i < length; ++i) {
-            require(!(characterTypes[i] & C1_CNTRL), "图层名称不能包含控制字符");
+            require(!(characterTypes[i] & C1_CNTRL), edm::tr("图层名称不能包含控制字符"));
             text |= !(characterTypes[i] & C1_SPACE);
         }
-        require(text, "图层名称不能为空白");
+        require(text, edm::tr("图层名称不能为空白"));
         require(std::isfinite(info.opacity) && info.opacity >= 0 && info.opacity <= 1,
-                "图层不透明度必须在 0 至 1 之间");
+                edm::tr("图层不透明度必须在 0 至 1 之间"));
     }
-    require(ids.contains(selected), "当前图层不存在");
+    require(ids.contains(selected), edm::tr("当前图层不存在"));
 }
 static Layer& findLayer(LayerState& state, uint64_t id) {
     auto found = std::find_if(state.layers.begin(), state.layers.end(),
                               [&](const Layer& layer) { return layer.info.id == id; });
-    require(found != state.layers.end(), "图层不存在");
+    require(found != state.layers.end(), edm::tr("图层不存在"));
     return *found;
 }
 static const Layer* maybeLayer(const LayerState& state, uint64_t id) noexcept {
@@ -90,7 +90,7 @@ size_t storage() const noexcept {
 void requireStorage(size_t additional) const {
     const size_t used = storage();
     require(used <= layerStorageLimit && additional <= layerStorageLimit - used,
-            "单张涂装图层及撤销像素内存超过 2 GiB，请清理图层或降低贴图尺寸");
+            edm::tr("单张涂装图层及撤销像素内存超过 2 GiB，请清理图层或降低贴图尺寸"));
 }
 uint32_t layerKey(uint32_t x, uint32_t y) const noexcept {
     return (y / tileSize) * ((image.width + tileSize - 1) / tileSize) + x / tileSize;
@@ -173,7 +173,7 @@ std::shared_ptr<LayerState> layout(const std::vector<PaintLayerInfo>& infos, uin
 }
 void requireLayerEdit() const {
     if (!layerData || !active || prepared)
-        throw std::runtime_error("图层编辑需要尚未提交的涂装操作");
+        throw std::runtime_error(edm::tr("图层编辑需要尚未提交的涂装操作"));
 }
 void publishLayerState(std::shared_ptr<LayerState> next, bool record) {
     // Only supports of layers whose appearance/order changed can change the composite. Renaming,
@@ -228,7 +228,7 @@ bool blendLayerPixel(int x, int y, const F4& color, float coverage) {
     requireLayerEdit();
     auto& layer = findLayer(*layerData->state, layerData->state->active);
     if (!layer.info.visible)
-        throw std::runtime_error("当前图层已隐藏，请先显示图层再绘制");
+        throw std::runtime_error(edm::tr("当前图层已隐藏，请先显示图层再绘制"));
     if (x < 0 || y < 0 || x >= int(image.width) || y >= int(image.height))
         return false;
     for (float value : color)

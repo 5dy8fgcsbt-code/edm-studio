@@ -7,6 +7,9 @@ using namespace edm;
 int wmain(int argc, wchar_t** argv) {
     SetConsoleOutputCP(CP_UTF8);
     try {
+        configureLanguage(argc, argv, false);
+        if (!languagePackWarning().empty())
+            std::cerr << languagePackWarning() << '\n';
         ComRuntime imageRuntime;
         if (argc >= 4 && std::wstring_view(argv[1]) == L"--lua-worker")
             return luaWorker(argv[2], argv[3]);
@@ -14,7 +17,7 @@ int wmain(int argc, wchar_t** argv) {
                 "Usage: edm-native-cli inspect|export|analyze|catalog|livery model.edm [--output path] "
                 "[--args 0,3,9] [--baseline 0=1,3=0] [--bort 123] [--livery path] [--context "
                 "JSON] [--textures dir] [--extra dir] [--no-textures] [--static|--model-only] [--duration 3] "
-                "[--dump-world path] [--attach connector=child.edm] [--hide-attachments]. "
+                "[--dump-world path] [--attach connector=child.edm] [--hide-attachments] [--language en-US|zh-CN]. "
                 "Repeat --attach for nested mounts; #nodeIndex resolves duplicate connector names. "
                 "Export extensions: .glb, .gltf, .obj (current static pose), .fbx");
         std::string command = utf8(argv[1]);
@@ -33,6 +36,8 @@ int wmain(int argc, wchar_t** argv) {
             };
             if (key == "--output")
                 output = wide(value());
+            else if (key == "--language")
+                value(); // Applied at startup.
             else if (key == "--dump-world")
                 dump = wide(value());
             else if (key == "--livery")
@@ -85,7 +90,7 @@ int wmain(int argc, wchar_t** argv) {
                 "--attach requires inspect, export, or analyze");
         Json result;
         if (command == "livery")
-            result = readLivery(source, "", "手动选择", "", context).metadata();
+            result = readLivery(source, "", edm::tr("手动选择"), "", context).metadata();
         else if (command == "catalog") {
             auto catalog = discoverLiveries(source, extras, progress);
             result = {{"liveries", Json::array()},
@@ -107,7 +112,7 @@ int wmain(int argc, wchar_t** argv) {
             }
             if (!liveryPath.empty())
                 options.livery =
-                    std::make_shared<Livery>(readLivery(liveryPath, "", "手动选择", "", context));
+                    std::make_shared<Livery>(readLivery(liveryPath, "", edm::tr("手动选择"), "", context));
             if (!bort.empty())
                 for (auto [a, v] : bortArguments(*scene, bort))
                     options.baseline[a] = v;

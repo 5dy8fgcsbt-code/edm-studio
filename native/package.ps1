@@ -32,6 +32,7 @@ $release = Join-Path $projectRoot 'release'
 New-Item -ItemType Directory -Path $bundle,$release,$installed -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'EDM-Studio-Native.exe') -Destination (Join-Path $bundle 'EDM-Studio.exe')
 Copy-Item -LiteralPath (Join-Path $binaryRoot 'edm-native-cli.exe') -Destination $bundle
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'locales') -Destination $bundle -Recurse -Force
 @{ version = $version; source_commit = $commit; working_tree_dirty = ($workingChanges.Count -gt 0); built_at_utc = [DateTime]::UtcNow.ToString('o') } |
     ConvertTo-Json | Set-Content -LiteralPath (Join-Path $bundle 'release-info.json') -Encoding utf8
 foreach ($file in @('README.md','THIRD_PARTY_NOTICES.md','LICENSE')) {

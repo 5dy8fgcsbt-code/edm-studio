@@ -176,7 +176,7 @@ Livery readLivery(fs::path path, std::string entry, std::string origin, std::str
             for (auto& e : zipEntries(path))
                 if (lower(leaf(e)) == "description.lua")
                     descriptions.push_back(e);
-            require(descriptions.size() == 1, "ZIP 中需要选择明确的 description.lua");
+            require(descriptions.size() == 1, edm::tr("ZIP 中需要选择明确的 description.lua"));
             entry = descriptions[0];
         }
         raw = zipRead(path, entry, 2000000);
@@ -189,7 +189,7 @@ Livery readLivery(fs::path path, std::string entry, std::string origin, std::str
     }
     auto result = evaluateLua(decodeText(raw), path, entry, context);
     auto& env = result.at("environment");
-    require(env.contains("livery") && env["livery"].is_object(), "没有可读取的 livery 表");
+    require(env.contains("livery") && env["livery"].is_object(), edm::tr("没有可读取的 livery 表"));
     Livery l;
     l.path = fs::absolute(path);
     l.entry = entry;
@@ -201,12 +201,12 @@ Livery readLivery(fs::path path, std::string entry, std::string origin, std::str
         if (!row.is_object() || !row.contains("1") || !row["1"].is_string() || !row.contains("2") ||
             !row["2"].is_number() || !row.contains("3") || !row["3"].is_string() || !row.contains("4") ||
             !row["4"].is_boolean()) {
-            l.warnings.push_back("跳过无效涂装记录。");
+            l.warnings.push_back(edm::tr("跳过无效涂装记录。"));
             continue;
         }
         double slot = row["2"].get<double>();
         if (!std::isfinite(slot) || slot != std::floor(slot) || slot < 0 || slot > 100000) {
-            l.warnings.push_back("无效材质槽位。");
+            l.warnings.push_back(edm::tr("无效材质槽位。"));
             continue;
         }
         TextureOverride t;
@@ -232,7 +232,7 @@ Livery readLivery(fs::path path, std::string entry, std::string origin, std::str
         for (auto& v : env["countries"])
             if (v.is_string())
                 l.countries.push_back(v);
-    require(env["livery"].empty() || !l.textures.empty(), "涂装没有有效材质贴图映射");
+    require(env["livery"].empty() || !l.textures.empty(), edm::tr("涂装没有有效材质贴图映射"));
     return l;
 }
 std::vector<fs::path> installationPaths(const fs::path& source) {
@@ -345,7 +345,7 @@ Catalog discoverLiveries(const fs::path& source, const std::vector<fs::path>& ex
         for (auto& p : profiles)
             if (fs::is_directory(p) && lower(pathString(p.filename())).starts_with("dcs")) {
                 std::string label =
-                    "保存的游戏 / " + pathString(p.parent_path().filename()) + "/" + pathString(p.filename());
+                    edm::tr("保存的游戏 / ") + pathString(p.parent_path().filename()) + "/" + pathString(p.filename());
                 add(p / "Liveries", label);
                 for (auto category : {"aircraft", "tech"})
                     for (auto& mod : children(p / "Mods" / category))
@@ -357,7 +357,7 @@ Catalog discoverLiveries(const fs::path& source, const std::vector<fs::path>& ex
             c.installs.push_back(p);
     c.installs = uniquePaths(c.installs);
     for (auto& install : c.installs) {
-        auto label = "DCS 本体 / " + pathString(install.filename());
+        auto label = edm::tr("DCS 本体 / ") + pathString(install.filename());
         add(install / "Bazar/Liveries", label);
         for (auto base : {"CoreMods", "Mods"})
             for (auto& category : children(install / base))
@@ -370,11 +370,11 @@ Catalog discoverLiveries(const fs::path& source, const std::vector<fs::path>& ex
     }
     for (auto& p : uniquePaths(extras))
         if (!isInstall(p)) {
-            add(p, "添加目录");
-            add(p / "Liveries", "添加目录");
+            add(p, edm::tr("添加目录"));
+            add(p / "Liveries", edm::tr("添加目录"));
             for (auto& child : children(p))
                 if (fs::is_directory(child) && lower(pathString(child.filename())).starts_with("dcs"))
-                    add(child / "Liveries", "添加目录");
+                    add(child / "Liveries", edm::tr("添加目录"));
         }
     auto name = std::regex_replace(pathString(source.stem()),
                                    std::regex("[_-](lod.*|collision.*)$", std::regex::icase), "");
@@ -409,7 +409,7 @@ Catalog discoverLiveries(const fs::path& source, const std::vector<fs::path>& ex
     }
     for (auto& [unit, label] : targets) {
         if (progress)
-            progress("扫描涂装：" + pathString(unit));
+            progress(edm::tr("扫描涂装：") + pathString(unit));
         for (auto& file : files(unit)) {
             if (cancel && *cancel)
                 throw std::runtime_error("Cancelled");
@@ -436,7 +436,8 @@ Catalog discoverLiveries(const fs::path& source, const std::vector<fs::path>& ex
         }
     }
     std::sort(c.liveries.begin(), c.liveries.end(), [](auto& a, auto& b) {
-        bool as = a.origin.starts_with("保存"), bs = b.origin.starts_with("保存");
+        bool as = a.origin.starts_with(edm::tr("保存的游戏 / ")),
+             bs = b.origin.starts_with(edm::tr("保存的游戏 / "));
         if (as != bs)
             return as;
         return lower(a.name) < lower(b.name);

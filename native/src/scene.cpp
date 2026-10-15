@@ -65,7 +65,7 @@ struct Build {
                 continue;
             const auto& levels = d.nodes[i].extras.at("levels");
             require(!levels.empty() && levels.size() == children[i].size(),
-                    "LOD 距离层级与子节点数量不一致，无法安全选择模型精度（节点 " +
+                    edm::tr("LOD 距离层级与子节点数量不一致，无法安全选择模型精度（节点 ") +
                         std::to_string(i) + "）");
             // EDM associates ranges with direct children in source order. Choose
             // the nearest range, not a name such as LOD0 or mesh complexity.
@@ -78,7 +78,7 @@ struct Build {
                                                          levels[selected][1].get<double>()})
                     selected = j;
             }
-            require(selected >= 0, "LOD 没有非空距离范围（节点 " + std::to_string(i) + "）");
+            require(selected >= 0, edm::tr("LOD 没有非空距离范围（节点 ") + std::to_string(i) + "）");
             selectedLods[i] = selected;
         }
         int visited = 0;
@@ -205,7 +205,7 @@ struct Build {
                 s.nodes[h].extras["edm_lod_levels"] = n.extras["levels"];
                 s.nodes[h].extras["edm_lod_selected_level"] = selectedLods[i];
             } else if (n.type == "BillboardNode")
-                s.warn("Billboard 随相机朝向的行为未导出。");
+                s.warn(edm::tr("Billboard 随相机朝向的行为未导出。"));
             s.heads.push_back(h);
             s.tails.push_back(p);
         }
@@ -482,7 +482,7 @@ struct Build {
                     mesh(r, mat, ri, i, int(n), &r.parents[i], parts[i]);
             }
             if (progress && ri % 50 == 0)
-                progress("构建网格 " + std::to_string(ri + 1) + " / " + std::to_string(d.renders.size()));
+                progress(edm::tr("构建网格 ") + std::to_string(ri + 1) + " / " + std::to_string(d.renders.size()));
         }
     }
     void collisionMeshes() {
@@ -521,7 +521,7 @@ struct Build {
             // Some shells carry extra channels; a collision surface still has no paintable UV map.
             s.meshes.back().uvs.clear();
             if (progress && !(index % 50))
-                progress("构建碰撞壳体 " + std::to_string(index + 1) + " / " +
+                progress(edm::tr("构建碰撞壳体 ") + std::to_string(index + 1) + " / " +
                          std::to_string(d.collisionShells.size()));
         }
     }
@@ -574,18 +574,18 @@ struct Build {
         }
         require(s.order.size() == s.nodes.size(), "Scene graph cycle");
         s.defaultWorld = s.evaluate({});
-        require(!s.meshes.empty(), "文件没有可导出的三角网格（外观与碰撞壳体均无三角形）");
+        require(!s.meshes.empty(), edm::tr("文件没有可导出的三角网格（外观与碰撞壳体均无三角形）"));
         require(std::any_of(s.meshes.begin(), s.meshes.end(), [](const Mesh& mesh) { return mesh.lodActive; }),
-                "最高精度 LOD 没有可用三角网格");
+                edm::tr("最高精度 LOD 没有可用三角网格"));
         if (d.collisionCount && !s.collisionOnly())
-            s.warn("碰撞壳体未加入可见模型。");
+            s.warn(edm::tr("碰撞壳体未加入可见模型。"));
         if (d.collisionLineCount)
-            s.warn("另有 " + std::to_string(d.collisionLineCount) + " 组碰撞线段，当前未显示或导出。");
+            s.warn(edm::tr("另有 ") + std::to_string(d.collisionLineCount) + edm::tr(" 组碰撞线段，当前未显示或导出。"));
         if (d.lightCount)
-            s.warn("DCS 专用灯光效果未转换。");
+            s.warn(edm::tr("DCS 专用灯光效果未转换。"));
         for (auto& m : s.materials)
             if (!m.animatedUniforms.empty())
-                s.warn("材质参数动画以元数据保留；DCS 专用着色器无法完整映射为 glTF PBR。");
+                s.warn(edm::tr("材质参数动画以元数据保留；DCS 专用着色器无法完整映射为 glTF PBR。"));
     }
 };
 } // namespace
@@ -795,10 +795,10 @@ std::vector<int> bortMapping(const Scene& s) {
 }
 Args bortArguments(const Scene& s, const std::string& text) {
     auto order = bortMapping(s);
-    require(!order.empty(), "模型没有已识别的快捷编号布局，请使用编号参数调节。");
+    require(!order.empty(), edm::tr("模型没有已识别的快捷编号布局，请使用编号参数调节。"));
     require(!text.empty() && text.size() <= order.size() &&
                 std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; }),
-            "请输入正确位数的数字");
+            edm::tr("请输入正确位数的数字"));
     std::string digits(order.size() - text.size(), '0');
     digits += text;
     Args args;

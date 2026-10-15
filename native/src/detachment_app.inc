@@ -1,8 +1,8 @@
 // Included inside App. The popup's explicit button is the only interactive unload entry point.
 void detachModel(int target) {
-    require(renderer.model && !loading && !attaching && !paint.busy(), "请等待模型与绘制任务完成");
+    require(renderer.model && !loading && !attaching && !paint.busy(), edm::tr("请等待模型与绘制任务完成"));
     const auto source = renderer.model->scene;
-    require(target >= 0 && target < int(source->nodes.size()), "无效挂点");
+    require(target >= 0 && target < int(source->nodes.size()), edm::tr("无效挂点"));
     auto images = paint.snapshot();
     auto layers = paint.layerSnapshot();
     auto selectedLivery = livery;
@@ -12,7 +12,7 @@ void detachModel(int target) {
     const auto gen = generation;
     attaching = true;
     playing = false;
-    notice = "正在卸载 " + source->nodes[target].name + " 的外挂";
+    notice = edm::tr("正在卸载 ") + source->nodes[target].name + edm::tr(" 的外挂");
     struct Prepared {
         DetachResult result;
         std::shared_ptr<GpuModel> model;
@@ -22,14 +22,14 @@ void detachModel(int target) {
         "attachment",
         [source, target, images, layers, selectedLivery, extra, recovery,
          device](Progress progress, const std::atomic_bool* cancel) {
-            progress("清理外挂层级与模型数据");
+            progress(edm::tr("清理外挂层级与模型数据"));
             Prepared prepared;
             prepared.result = detachScene(*source, target);
             require(!*cancel, "Cancelled");
             const auto& map = prepared.result.materialMap;
             if (std::any_of(images.begin(), images.end(),
                             [&](const auto& image) { return map.at(image.first) < 0; })) {
-                progress("保存卸载物体的绘制恢复副本");
+                progress(edm::tr("保存卸载物体的绘制恢复副本"));
                 prepared.recovery = savePaintRecovery(*source, images, recovery, progress, cancel,
                                                       selectedLivery, extra, layers);
             }
@@ -91,9 +91,9 @@ void detachModel(int target) {
             cancelKind("analysis");
             startAnalysis();
             startTextures(true);
-            notice = "已卸载 " + std::to_string(result.removedCount) + " 件外挂 · 其余模型与涂装已保留";
+            notice = edm::tr("已卸载 ") + std::to_string(result.removedCount) + edm::tr(" 件外挂 · 其余模型与涂装已保留");
             if (!prepared.recovery.is_null())
-                notice += " · 已保存绘制恢复副本";
+                notice += edm::tr(" · 已保存绘制恢复副本");
             record(notice);
             if (smoke)
                 lastDetachment = {{"removed_count", result.removedCount},

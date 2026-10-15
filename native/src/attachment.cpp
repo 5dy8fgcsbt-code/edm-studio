@@ -363,7 +363,7 @@ std::shared_ptr<Scene> attachScene(const Scene& base, const Scene& child, int ta
     for (const auto& warning : child.warnings)
         result->warn(pathString(child.source.filename()) + ": " + warning);
     if (attachPoint < 0)
-        result->warn(pathString(child.source.filename()) + " 没有 AttachPoint，使用模型原点连接。");
+        result->warn(pathString(child.source.filename()) + edm::tr(" 没有 AttachPoint，使用模型原点连接。"));
     rebuild(*result);
     return result;
 }

@@ -414,7 +414,7 @@ class Parser {
                 }
             }
             if (progress)
-                progress("读取 " + name);
+                progress(edm::tr("读取 ") + name);
         }
         require(pos == d.file->size, "Unconsumed EDM bytes: " + std::to_string(d.file->size - pos));
         std::vector<uint8_t> state(d.nodes.size());

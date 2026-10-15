@@ -2,7 +2,7 @@
 void PaintCanvas::enableLayers(const std::vector<PaintLayerInfo>& infos, uint64_t selected) {
     require(!impl->active && !impl->layerData, "Only an inactive flat canvas can enable layers");
     auto state = impl->layout(infos, selected);
-    require(impl->image.rgba.size() <= Impl::layerStorageLimit / 2, "涂装图层基础画布超过内存限制");
+    require(impl->image.rgba.size() <= Impl::layerStorageLimit / 2, edm::tr("涂装图层基础画布超过内存限制"));
     auto data = std::make_unique<Impl::LayerData>();
     data->base = std::make_shared<const PaintImage>(impl->image);
     data->state = std::move(state);
@@ -44,7 +44,7 @@ void PaintCanvas::syncLayers(const std::vector<PaintLayerInfo>& infos, uint64_t 
 }
 void PaintCanvas::duplicateLayer(uint64_t source, uint64_t destination) {
     impl->requireLayerEdit();
-    require(source != destination, "复制图层的目标不能是原图层");
+    require(source != destination, edm::tr("复制图层的目标不能是原图层"));
     auto state = std::make_shared<Impl::LayerState>(*impl->layerData->state);
     auto& target = Impl::findLayer(*state, destination);
     target.tiles = Impl::findLayer(*state, source).tiles;
@@ -60,10 +60,10 @@ void PaintCanvas::replaceLayerImage(uint64_t id, const PaintImage& image) {
     impl->requireLayerEdit();
     image.validate();
     require(image.width == impl->image.width && image.height == impl->image.height,
-            "图层模板尺寸必须与画布相同");
+            edm::tr("图层模板尺寸必须与画布相同"));
     auto state = std::make_shared<Impl::LayerState>(*impl->layerData->state);
     auto& layer = Impl::findLayer(*state, id);
-    require(layer.info.visible, "当前图层已隐藏，请先显示图层再导入模板");
+    require(layer.info.visible, edm::tr("当前图层已隐藏，请先显示图层再导入模板"));
     auto tiles = std::make_shared<Impl::LayerTiles>();
     uint32_t across = (image.width + tileSize - 1) / tileSize;
     uint32_t down = (image.height + tileSize - 1) / tileSize;
@@ -96,7 +96,7 @@ size_t PaintCanvas::layerSnapshotBytes() const {
             for (const auto& [key, tile] : *layer.tiles) {
                 require(bytes <= Impl::layerStorageLimit &&
                             tile->image.rgba.size() <= Impl::layerStorageLimit - bytes,
-                        "图层工程的展开像素超过 2 GiB，保存前请减少完整贴图的重复图层");
+                        edm::tr("图层工程的展开像素超过 2 GiB，保存前请减少完整贴图的重复图层"));
                 bytes += tile->image.rgba.size();
             }
     return bytes;
@@ -146,9 +146,9 @@ void PaintCanvas::restoreLayers(PaintCanvasLayers snapshot) {
                         tile.x % tileSize == 0 && tile.y % tileSize == 0 &&
                         tile.image.width == std::min(tileSize, prepared->image.width - tile.x) &&
                         tile.image.height == std::min(tileSize, prepared->image.height - tile.y),
-                    "图层分块位置或尺寸无效");
+                    edm::tr("图层分块位置或尺寸无效"));
             uint32_t key = prepared->layerKey(tile.x, tile.y);
-            require(!tiles->contains(key), "图层分块重复或重叠");
+            require(!tiles->contains(key), edm::tr("图层分块重复或重叠"));
             prepared->requireStorage(tile.image.rgba.size());
             tiles->emplace(
                 key, std::make_shared<Impl::LayerTile>(std::move(tile.image), prepared->layerData->memory));

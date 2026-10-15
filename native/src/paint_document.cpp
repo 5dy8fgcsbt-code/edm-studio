@@ -22,7 +22,7 @@ std::string luaString(const std::string& value) {
     return out + '"';
 }
 void cancelled(const std::atomic_bool* cancel) {
-    require(!cancel || !cancel->load(), "涂装工程操作已取消");
+    require(!cancel || !cancel->load(), edm::tr("涂装工程操作已取消"));
 }
 struct Fingerprint {
     uint64_t value = 14695981039346656037ull;
@@ -115,16 +115,16 @@ Json layerInfos(const PaintCanvasLayers& canvas) {
 }
 size_t snapshotBytes(const PaintCanvasLayers& canvas) {
     canvas.base.validate();
-    require(canvas.base.width <= 8192 && canvas.base.height <= 8192, "图层工程画布单边不能超过 8192 像素");
+    require(canvas.base.width <= 8192 && canvas.base.height <= 8192, edm::tr("图层工程画布单边不能超过 8192 像素"));
     size_t bytes = canvas.base.rgba.size() * 2; // Immutable base plus editable composite.
     for (const auto& layer : canvas.layers)
         for (const auto& tile : layer.tiles) {
             tile.image.validate();
             require(tile.image.rgba.size() <= paintProjectByteBudget - bytes,
-                    "单画布底图、合成图和图层像素超过 2 GiB");
+                    edm::tr("单画布底图、合成图和图层像素超过 2 GiB"));
             bytes += tile.image.rgba.size();
         }
-    require(bytes <= paintProjectByteBudget, "单画布底图、合成图和图层像素超过 2 GiB");
+    require(bytes <= paintProjectByteBudget, edm::tr("单画布底图、合成图和图层像素超过 2 GiB"));
     return bytes;
 }
 std::string pngHash(std::span<const uint8_t> bytes) {
@@ -142,11 +142,11 @@ std::string pngHash(std::span<const uint8_t> bytes) {
                 CryptCreateHash(crypto.provider, CALG_SHA_256, 0, 0, &crypto.hash) &&
                 bytes.size() <= std::numeric_limits<DWORD>::max() &&
                 CryptHashData(crypto.hash, bytes.data(), DWORD(bytes.size()), 0),
-            "无法计算图层 PNG 的 SHA-256 校验");
+            edm::tr("无法计算图层 PNG 的 SHA-256 校验"));
     std::array<uint8_t, 32> digest{};
     DWORD count = DWORD(digest.size());
     require(CryptGetHashParam(crypto.hash, HP_HASHVAL, digest.data(), &count, 0) && count == digest.size(),
-            "无法读取图层 PNG 校验");
+            edm::tr("无法读取图层 PNG 校验"));
     std::ostringstream out;
     out << std::hex << std::setfill('0');
     for (auto byte : digest)
@@ -160,13 +160,13 @@ PaintImage decodeProjectPng(std::span<const uint8_t> bytes) {
     DirectX::ScratchImage decoded, converted;
     require(SUCCEEDED(DirectX::LoadFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_FORCE_RGB,
                                                  nullptr, decoded)),
-            "无法解码工程 PNG");
+            edm::tr("无法解码工程 PNG"));
     const auto* pixels = decoded.GetImage(0, 0, 0);
-    require(pixels != nullptr && pixels->width <= 8192 && pixels->height <= 8192, "工程 PNG 尺寸无效");
+    require(pixels != nullptr && pixels->width <= 8192 && pixels->height <= 8192, edm::tr("工程 PNG 尺寸无效"));
     if (pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM && pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
         require(SUCCEEDED(DirectX::Convert(*pixels, DXGI_FORMAT_R8G8B8A8_UNORM, DirectX::TEX_FILTER_DEFAULT,
                                            0, converted)),
-                "无法转换工程 PNG");
+                edm::tr("无法转换工程 PNG"));
         pixels = converted.GetImage(0, 0, 0);
     }
     PaintImage result(uint32_t(pixels->width), uint32_t(pixels->height));
@@ -190,9 +190,9 @@ Json saveLayerImage(const PaintImage& image, const fs::path& directory, const st
 Json saveLayerState(const Scene& scene, const PaintSnapshot& images, const PaintLayerSnapshotMap& snapshots,
                     const Json& flattened, const fs::path& directory, Progress progress,
                     const std::atomic_bool* cancel) {
-    require(snapshots.size() == images.size(), "每个绘制材质都必须提供完整图层快照");
+    require(snapshots.size() == images.size(), edm::tr("每个绘制材质都必须提供完整图层快照"));
     for (const auto& [material, snapshot] : snapshots)
-        require(images.contains(material) && snapshot, "图层快照材料索引无效或为空");
+        require(images.contains(material) && snapshot, edm::tr("图层快照材料索引无效或为空"));
     const auto& first = *snapshots.begin()->second;
     const auto descriptions = layerInfos(first);
     Json result = {{"version", 1},
@@ -209,27 +209,27 @@ Json saveLayerState(const Scene& scene, const PaintSnapshot& images, const Paint
             found = std::find_if(snapshots.begin(), snapshots.end(), [&](const auto& candidate) {
                 return lower(scene.materials[candidate.first].name) == lower(scene.materials[material].name);
             });
-        require(found != snapshots.end(), "展开的同名绘制材质缺少图层快照");
+        require(found != snapshots.end(), edm::tr("展开的同名绘制材质缺少图层快照"));
         const auto& snapshot = *found->second;
         require(layerInfos(snapshot) == descriptions && snapshot.activeLayer == first.activeLayer,
-                "跨材质的图层顺序、属性或活动图层不一致");
+                edm::tr("跨材质的图层顺序、属性或活动图层不一致"));
         auto existing = known.find(&snapshot);
         if (existing != known.end()) {
             require(result["canvases"][existing->second]["composite_fingerprint"] ==
                         entry.at("image_fingerprint"),
-                    "共享图层快照对应了不同的合成图像");
+                    edm::tr("共享图层快照对应了不同的合成图像"));
             result["canvases"][existing->second]["materials"].push_back(material);
             continue;
         }
         const auto bytes = snapshotBytes(snapshot);
-        require(bytes <= paintProjectByteBudget - expanded, "工程底图、合成图和图层像素展开后超过 2 GiB");
+        require(bytes <= paintProjectByteBudget - expanded, edm::tr("工程底图、合成图和图层像素展开后超过 2 GiB"));
         expanded += bytes;
         // Reuse the editing engine's exact validation and compositing rules. Never publish a
         // project whose layer state reconstructs a different image from its exported preview.
         PaintCanvas verified(PaintImage(1, 1));
         verified.restoreLayers(snapshot);
         require(sameImage(verified.image(), *images.at(found->first)),
-                "图层快照与合成图像不一致，请结束当前绘制后重试保存");
+                edm::tr("图层快照与合成图像不一致，请结束当前绘制后重试保存"));
         const auto number = known.size();
         const std::string stem = "layers/canvas_" + std::to_string(number);
         Json canvas = {{"materials", Json::array({material})},
@@ -252,7 +252,7 @@ Json saveLayerState(const Scene& scene, const PaintSnapshot& images, const Paint
         known[&snapshot] = result["canvases"].size();
         result["canvases"].push_back(std::move(canvas));
         if (progress)
-            progress("保存完整图层 " + std::to_string(known.size()));
+            progress(edm::tr("保存完整图层 ") + std::to_string(known.size()));
     }
     result["expanded_bytes"] = expanded;
     return result;
@@ -313,7 +313,7 @@ void copyDDS(const ImageSource& source, const fs::path& target, const std::atomi
         DirectX::TexMetadata metadata;
         require(SUCCEEDED(DirectX::GetMetadataFromDDSMemory(bytes.data(), bytes.size(),
                                                             DirectX::DDS_FLAGS_NONE, metadata)),
-                "源 DDS 文件无效: " + source.key());
+                edm::tr("源 DDS 文件无效: ") + source.key());
         cancelled(cancel);
         writeFile(target, bytes);
         return;
@@ -323,7 +323,7 @@ void copyDDS(const ImageSource& source, const fs::path& target, const std::atomi
     require(
         SUCCEEDED(DirectX::SaveToDDSMemory(texture->pixels.GetImages(), texture->pixels.GetImageCount(),
                                            texture->pixels.GetMetadata(), DirectX::DDS_FLAGS_NONE, encoded)),
-        "无法将涂装依赖转为 DDS: " + source.key());
+        edm::tr("无法将涂装依赖转为 DDS: ") + source.key());
     cancelled(cancel);
     writeFile(target, {static_cast<const uint8_t*>(encoded.GetBufferPointer()), encoded.GetBufferSize()});
 }
@@ -345,24 +345,24 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
           std::shared_ptr<Livery> livery, const fs::path& textureDirectory, Progress progress,
           const std::atomic_bool* cancel, bool recovery, bool assetsOnly = false,
           const PaintLayerSnapshotMap& layerCanvases = {}) {
-    require(assetsOnly || !images.empty(), "尚无可保存的绘制材质");
-    require(!directory.empty(), "请选择保存目录");
+    require(assetsOnly || !images.empty(), edm::tr("尚无可保存的绘制材质"));
+    require(!directory.empty(), edm::tr("请选择保存目录"));
     cancelled(cancel);
     std::map<std::string, std::vector<int>> groups;
     for (size_t i = 0; i < scene.materials.size(); ++i)
         groups[recovery ? std::to_string(i) : lower(scene.materials[i].name)].push_back(int(i));
     std::map<std::string, std::shared_ptr<const PaintImage>> groupImages;
     for (const auto& [material, image] : images) {
-        require(material >= 0 && material < int(scene.materials.size()) && image, "无效的绘制材质或空图像");
+        require(material >= 0 && material < int(scene.materials.size()) && image, edm::tr("无效的绘制材质或空图像"));
         image->validate();
-        require(image->width <= 8192 && image->height <= 8192, "工程画布单边不能超过 8192 像素");
+        require(image->width <= 8192 && image->height <= 8192, edm::tr("工程画布单边不能超过 8192 像素"));
         const auto& materialName = scene.materials[material].name;
-        require(recovery || meaningful(materialName), "DCS 无法按空材质名称应用绘制涂装");
+        require(recovery || meaningful(materialName), edm::tr("DCS 无法按空材质名称应用绘制涂装"));
         auto [found, inserted] =
             groupImages.try_emplace(recovery ? std::to_string(material) : lower(materialName), image);
-        require(inserted || sameImage(*found->second, *image), "同名材质有不同绘制内容，DCS 无法分别寻址：" +
+        require(inserted || sameImage(*found->second, *image), edm::tr("同名材质有不同绘制内容，DCS 无法分别寻址：") +
                                                                    materialName +
-                                                                   "。请先统一同名材质的绘制图像。");
+                                                                   edm::tr("。请先统一同名材质的绘制图像。"));
     }
     size_t expandedBytes = 0;
     constexpr size_t editingBudget = paintProjectByteBudget;
@@ -370,7 +370,7 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
         for (const auto& [key, image] : groupImages)
             for (size_t copy = 0; copy < groups.at(key).size(); ++copy) {
                 require(image->rgba.size() <= editingBudget - expandedBytes,
-                        "按材质展开的工程画布超过 2 GiB 编辑预算");
+                        edm::tr("按材质展开的工程画布超过 2 GiB 编辑预算"));
                 expandedBytes += image->rgba.size();
             }
     }
@@ -393,7 +393,7 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
         manifest["original_diffuse"] = Json::array();
     fs::create_directories(directory);
     const auto parent = fs::weakly_canonical(directory);
-    require(fs::is_directory(parent), "保存目标不是目录");
+    require(fs::is_directory(parent), edm::tr("保存目标不是目录"));
     SYSTEMTIME now{};
     GetLocalTime(&now);
     char stamp[96];
@@ -446,7 +446,7 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
     for (const auto& [key, members] : groups) {
         cancelled(cancel);
         if (progress)
-            progress("保存涂装材质 " + std::to_string(++completed) + " / " + std::to_string(groups.size()));
+            progress(edm::tr("保存涂装材质 ") + std::to_string(++completed) + " / " + std::to_string(groups.size()));
         cancelled(cancel);
         const auto& mat = scene.materials[members.front()];
         std::set<std::pair<std::string, int>> owners;
@@ -465,9 +465,9 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
                     if (!images.contains(member)) {
                         const auto original = resolver->material(cleanMaterial(scene.materials[member]), 0);
                         require(original && sameImage(PaintImage::load(*original), *edited->second),
-                                "主模型与外挂物体使用同名材质但绘制内容不同，单个 description.lua "
-                                "无法分别寻址：" +
-                                    mat.name + "。请统一这些同名材质的绘制内容。");
+                                edm::tr("主模型与外挂物体使用同名材质但绘制内容不同，单个 description.lua "
+                                "无法分别寻址：") +
+                                    mat.name + edm::tr("。请统一这些同名材质的绘制内容。"));
                     }
             const std::string stem = "paint_" + std::to_string(members.front());
             edited->second->savePNG(staging.directory / (stem + ".png"));
@@ -486,8 +486,8 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
                      {"height", edited->second->height},
                      {"image_fingerprint", checksum}});
             if (members.size() > 1)
-                manifest["warnings"].push_back("DCS 按材质名称共享涂装：" + mat.name + " 的绘制同时应用于 " +
-                                               std::to_string(members.size()) + " 个同名材质。");
+                manifest["warnings"].push_back(edm::tr("DCS 按材质名称共享涂装：") + mat.name + edm::tr(" 的绘制同时应用于 ") +
+                                               std::to_string(members.size()) + edm::tr(" 个同名材质。"));
             description << "  {" << luaString(mat.name) << ", 0, " << luaString(stem) << ", false},\n";
         }
         if (recovery)
@@ -541,11 +541,11 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
                 original = {{"material", members.front()}, {"material_name", mat.name}};
             if (ambiguous) {
                 require(!crossModel,
-                        "主模型与外挂物体存在同名材质的不同贴图，单个 description.lua 无法分别寻址：" +
-                            mat.name + "，槽位 " + std::to_string(slot) +
-                            "。请更换使用不同材质名的模型或统一贴图。");
-                manifest["warnings"].push_back("同名材质 " + mat.name + " 的默认槽 " + std::to_string(slot) +
-                                               " 不同；保留各自默认纹理，避免错误覆盖。");
+                        edm::tr("主模型与外挂物体存在同名材质的不同贴图，单个 description.lua 无法分别寻址：") +
+                            mat.name + edm::tr("，槽位 ") + std::to_string(slot) +
+                            edm::tr("。请更换使用不同材质名的模型或统一贴图。"));
+                manifest["warnings"].push_back(edm::tr("同名材质 ") + mat.name + edm::tr(" 的默认槽 ") + std::to_string(slot) +
+                                               edm::tr(" 不同；保留各自默认纹理，避免错误覆盖。"));
                 manifest["self_contained"] = false;
                 if (originalDiffuse) {
                     original["state"] = "default";
@@ -617,19 +617,19 @@ Json save(const Scene& scene, const PaintSnapshot& images, const fs::path& direc
         manifest["layer_state"] = saveLayerState(scene, images, layerCanvases, manifest["textures"],
                                                  staging.directory, progress, cancel);
     if (progress)
-        progress("完成工程与 DCS 涂装配置");
+        progress(edm::tr("完成工程与 DCS 涂装配置"));
     cancelled(cancel);
     const auto serialized = manifest.dump(2, ' ', false, Json::error_handler_t::strict);
-    require(serialized.size() <= paintProjectManifestBytes, "图层工程清单超过 64 MiB 限制");
+    require(serialized.size() <= paintProjectManifestBytes, edm::tr("图层工程清单超过 64 MiB 限制"));
     textFile(staging.directory / "project.edmpaint.json", serialized);
     if (!recovery)
         textFile(staging.directory / "description.lua", description.str());
     if (progress)
-        progress("发布涂装目录");
+        progress(edm::tr("发布涂装目录"));
     cancelled(cancel);
     fs::remove(staging.directory / "INCOMPLETE.txt");
     require(MoveFileExW(staging.directory.c_str(), staging.final.c_str(), MOVEFILE_WRITE_THROUGH) != 0,
-            "无法发布涂装目录，暂存内容保持未完成状态");
+            edm::tr("无法发布涂装目录，暂存内容保持未完成状态"));
     staging.published = true;
     return manifest;
 }
@@ -685,27 +685,27 @@ Json exportLiveryAssetsFromPng(const Scene& scene, const std::map<int, std::vect
     size_t expandedBytes = 0;
     for (const auto& [material, bytes] : images) {
         cancelled(cancel);
-        require(material >= 0 && material < int(scene.materials.size()), "导出绘制材质索引无效");
+        require(material >= 0 && material < int(scene.materials.size()), edm::tr("导出绘制材质索引无效"));
         DirectX::TexMetadata metadata;
         require(SUCCEEDED(DirectX::GetMetadataFromWICMemory(bytes.data(), bytes.size(),
                                                             DirectX::WIC_FLAGS_NONE, metadata)),
-                "无法读取导出绘制图像");
+                edm::tr("无法读取导出绘制图像"));
         require(metadata.width && metadata.height && metadata.width <= 8192 && metadata.height <= 8192,
-                "导出绘制图像单边不能超过 8192 像素");
+                edm::tr("导出绘制图像单边不能超过 8192 像素"));
         const auto required = metadata.width * metadata.height * 4;
-        require(required <= paintProjectByteBudget - expandedBytes, "导出绘制图像超过 2 GiB 编辑预算");
+        require(required <= paintProjectByteBudget - expandedBytes, edm::tr("导出绘制图像超过 2 GiB 编辑预算"));
         expandedBytes += required;
         DirectX::ScratchImage loaded, converted;
         require(SUCCEEDED(DirectX::LoadFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_FORCE_RGB,
                                                      nullptr, loaded)),
-                "无法解码导出绘制图像");
+                edm::tr("无法解码导出绘制图像"));
         const auto* pixels = loaded.GetImage(0, 0, 0);
-        require(pixels != nullptr, "导出绘制图像没有像素");
+        require(pixels != nullptr, edm::tr("导出绘制图像没有像素"));
         if (pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM &&
             pixels->format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) {
             require(SUCCEEDED(DirectX::Convert(*pixels, DXGI_FORMAT_R8G8B8A8_UNORM,
                                                DirectX::TEX_FILTER_DEFAULT, 0, converted)),
-                    "无法转换导出绘制图像");
+                    edm::tr("无法转换导出绘制图像"));
             pixels = converted.GetImage(0, 0, 0);
         }
         auto image = std::make_shared<PaintImage>(uint32_t(pixels->width), uint32_t(pixels->height));
@@ -720,7 +720,7 @@ Json exportLiveryAssetsFromPng(const Scene& scene, const std::map<int, std::vect
 Json savePaintRecovery(const Scene& scene, const PaintSnapshot& images, const fs::path& directory,
                        Progress progress, const std::atomic_bool* cancel, std::shared_ptr<Livery> livery,
                        const fs::path& textureDirectory, const PaintLayerSnapshotMap& layerCanvases) {
-    return save(scene, images, directory, "未保存绘制恢复", std::move(livery), textureDirectory,
+    return save(scene, images, directory, edm::tr("未保存绘制恢复"), std::move(livery), textureDirectory,
                 std::move(progress), cancel, true, false, layerCanvases);
 }
 namespace {
@@ -731,16 +731,16 @@ std::map<int, size_t> layerOwnership(const Json& manifest, size_t materialCount)
     const auto& state = manifest.at("layer_state");
     require(state.is_object() && state.at("canvases").is_array() && !state["canvases"].empty() &&
                 state["canvases"].size() <= materialCount,
-            "图层工程共享画布记录无效");
+            edm::tr("图层工程共享画布记录无效"));
     for (size_t i = 0; i < state["canvases"].size(); ++i) {
         const auto& members = state["canvases"][i].at("materials");
         require(members.is_array() && !members.empty() && members.size() <= materialCount,
-                "图层工程共享材质记录无效");
+                edm::tr("图层工程共享材质记录无效"));
         for (const auto& member : members) {
             const int material = int(
-                unsignedInteger(member, uint64_t(std::numeric_limits<int>::max()), "图层工程材质索引无效"));
+                unsignedInteger(member, uint64_t(std::numeric_limits<int>::max()), edm::tr("图层工程材质索引无效")));
             require(size_t(material) < materialCount && result.emplace(material, i).second,
-                    "图层工程材质索引无效或重复");
+                    edm::tr("图层工程材质索引无效或重复"));
         }
     }
     return result;
@@ -749,15 +749,15 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
                          const std::atomic_bool* cancel, const PaintLoadOptions& options) {
     cancelled(cancel);
     require(options.maxExpandedBytes > 0 && options.maxExpandedBytes <= paintProjectByteBudget,
-            "工程加载预算必须在 1 字节至 2 GiB 之间");
+            edm::tr("工程加载预算必须在 1 字节至 2 GiB 之间"));
     require(manifest.value("format", "") == "EDM Studio Paint" &&
                 (manifest.value("version", 0) == 2 || manifest.value("version", 0) == 3),
-            "不是受支持的 EDM 绘制工程（需要版本 2 或 3 的完整材质身份）");
+            edm::tr("不是受支持的 EDM 绘制工程（需要版本 2 或 3 的完整材质身份）"));
     require(manifest.at("scene_fingerprint").get<std::string>() == sceneFingerprint(scene, cancel),
-            "绘制工程的模型 / UV / 材质身份与当前模型不匹配");
+            edm::tr("绘制工程的模型 / UV / 材质身份与当前模型不匹配"));
     require(manifest.at("textures").is_array() && !manifest["textures"].empty() &&
                 manifest["textures"].size() <= scene.materials.size(),
-            "绘制工程材质数量不匹配");
+            edm::tr("绘制工程材质数量不匹配"));
     const auto root = fs::weakly_canonical(project.parent_path());
     PaintSnapshot out;
     const auto ownership = layerOwnership(manifest, scene.materials.size());
@@ -768,10 +768,10 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
     for (const auto& entry : manifest["textures"]) {
         cancelled(cancel);
         const int index = int(unsignedInteger(entry.at("material"), uint64_t(std::numeric_limits<int>::max()),
-                                              "无效绘制材质索引"));
+                                              edm::tr("无效绘制材质索引")));
         require(index >= 0 && index < int(scene.materials.size()) && !out.contains(index),
-                "无效或重复的绘制材质索引");
-        require(!layered || ownership.contains(index), "绘制材质缺少完整图层画布");
+                edm::tr("无效或重复的绘制材质索引"));
+        require(!layered || ownership.contains(index), edm::tr("绘制材质缺少完整图层画布"));
         const auto owner = layered ? ownership.at(index) : size_t(index);
         const auto alias = sharedComposites.find(owner);
         const bool shared = layered && alias != sharedComposites.end();
@@ -779,18 +779,18 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
             require(entry.at("width") == alias->second.first->width &&
                         entry.at("height") == alias->second.first->height &&
                         entry.at("image_fingerprint") == alias->second.second,
-                    "共享画布对应了不同的合成图像");
+                    edm::tr("共享画布对应了不同的合成图像"));
         require(entry.at("material_name") == scene.materials[index].name &&
                     entry.at("material_identity") == materialIdentity(scene.materials[index]),
-                "绘制工程与当前模型材质不匹配");
+                edm::tr("绘制工程与当前模型材质不匹配"));
         const std::string file = entry.at("file").get<std::string>();
         const fs::path relative = wide(file);
         require(!relative.empty() && !relative.is_absolute() && !relative.has_root_name() &&
                     !relative.has_root_directory() && file.find(':') == std::string::npos &&
                     file.find('\0') == std::string::npos && lower(pathString(relative.extension())) == ".png",
-                "工程图片必须为工程内的 PNG 相对路径");
+                edm::tr("工程图片必须为工程内的 PNG 相对路径"));
         const auto path = fs::weakly_canonical(root / relative);
-        require(within(path, root) && fs::is_regular_file(path), "工程图片路径超出工程目录或文件不存在");
+        require(within(path, root) && fs::is_regular_file(path), edm::tr("工程图片路径超出工程目录或文件不存在"));
         std::shared_ptr<const PaintImage> image;
         std::string checksum;
         if (auto existing = loaded.find(path); existing != loaded.end()) {
@@ -801,21 +801,21 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
             constexpr std::array<uint8_t, 8> signature{137, 80, 78, 71, 13, 10, 26, 10};
             require(bytes.size() >= signature.size() &&
                         std::equal(signature.begin(), signature.end(), bytes.begin()),
-                    "工程图片不是 PNG 文件");
+                    edm::tr("工程图片不是 PNG 文件"));
             DirectX::TexMetadata metadata;
             ComApartment apartment;
             require(SUCCEEDED(DirectX::GetMetadataFromWICMemory(bytes.data(), bytes.size(),
                                                                 DirectX::WIC_FLAGS_NONE, metadata)),
-                    "工程 PNG 元数据损坏");
+                    edm::tr("工程 PNG 元数据损坏"));
             require(metadata.width && metadata.height && metadata.width <= 8192 && metadata.height <= 8192,
-                    "工程画布单边不能超过 8192 像素");
+                    edm::tr("工程画布单边不能超过 8192 像素"));
             const uint64_t expectedBytes = uint64_t(metadata.width) * metadata.height * 4;
             require(shared || expectedBytes <= options.maxExpandedBytes - totalBytes,
-                    "按材质展开的工程画布超过编辑预算");
+                    edm::tr("按材质展开的工程画布超过编辑预算"));
             if (shared)
                 require(metadata.width == alias->second.first->width &&
                             metadata.height == alias->second.first->height,
-                        "共享画布 PNG 的实际尺寸不一致");
+                        edm::tr("共享画布 PNG 的实际尺寸不一致"));
             cancelled(cancel);
             image = std::make_shared<PaintImage>(decodeProjectPng(bytes));
             checksum = imageFingerprint(*image);
@@ -823,19 +823,19 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
         }
         // v2 is independently expanded. Only v3's explicit ownership permits a shared canvas.
         if (shared) {
-            require(sameImage(*image, *alias->second.first), "共享画布的合成 PNG 像素不一致");
+            require(sameImage(*image, *alias->second.first), edm::tr("共享画布的合成 PNG 像素不一致"));
             image = alias->second.first;
             loaded[path] = {image, checksum};
         } else {
             require(image->rgba.size() <= options.maxExpandedBytes - totalBytes,
-                    "按材质展开的工程画布超过编辑预算");
+                    edm::tr("按材质展开的工程画布超过编辑预算"));
             totalBytes += image->rgba.size();
             if (layered)
                 sharedComposites.emplace(owner, std::make_pair(image, checksum));
         }
         require(entry.at("width") == image->width && entry.at("height") == image->height &&
                     entry.at("image_fingerprint").get<std::string>() == checksum,
-                "工程图片尺寸或像素校验不匹配，文件可能已更改或损坏");
+                edm::tr("工程图片尺寸或像素校验不匹配，文件可能已更改或损坏"));
         out[index] = std::move(image);
     }
     cancelled(cancel);
@@ -843,33 +843,33 @@ PaintSnapshot loadImages(const Scene& scene, const fs::path& project, const Json
 }
 PaintImage loadLayerImage(const Json& record, const fs::path& root, const std::atomic_bool* cancel) {
     cancelled(cancel);
-    const auto width = unsignedInteger(record.at("width"), 8192, "图层 PNG 宽度无效");
-    const auto height = unsignedInteger(record.at("height"), 8192, "图层 PNG 高度无效");
-    require(width && height, "图层 PNG 尺寸不能为空");
+    const auto width = unsignedInteger(record.at("width"), 8192, edm::tr("图层 PNG 宽度无效"));
+    const auto height = unsignedInteger(record.at("height"), 8192, edm::tr("图层 PNG 高度无效"));
+    require(width && height, edm::tr("图层 PNG 尺寸不能为空"));
     const auto file = record.at("file").get<std::string>();
     const fs::path relative = wide(file);
     require(!relative.empty() && !relative.is_absolute() && !relative.has_root_name() &&
                 !relative.has_root_directory() && file.find(':') == std::string::npos &&
                 file.find('\0') == std::string::npos && lower(pathString(relative.extension())) == ".png",
-            "图层图片必须是工程内的 PNG 相对路径");
+            edm::tr("图层图片必须是工程内的 PNG 相对路径"));
     const auto path = fs::weakly_canonical(root / relative);
-    require(within(path, root) && fs::is_regular_file(path), "图层图片路径超出工程目录或文件不存在");
+    require(within(path, root) && fs::is_regular_file(path), edm::tr("图层图片路径超出工程目录或文件不存在"));
     const auto bytes = readFile(path, projectPngBytes);
     constexpr std::array<uint8_t, 8> signature{137, 80, 78, 71, 13, 10, 26, 10};
     require(bytes.size() >= signature.size() && std::equal(signature.begin(), signature.end(), bytes.begin()),
-            "图层图片不是 PNG 文件");
-    require(record.at("png_sha256").get<std::string>() == pngHash(bytes), "图层 PNG 文件 SHA-256 校验失败");
+            edm::tr("图层图片不是 PNG 文件"));
+    require(record.at("png_sha256").get<std::string>() == pngHash(bytes), edm::tr("图层 PNG 文件 SHA-256 校验失败"));
     DirectX::TexMetadata metadata;
     ComApartment apartment;
     require(SUCCEEDED(DirectX::GetMetadataFromWICMemory(bytes.data(), bytes.size(), DirectX::WIC_FLAGS_NONE,
                                                         metadata)) &&
                 metadata.width == width && metadata.height == height,
-            "图层 PNG 元数据尺寸与工程声明不同");
+            edm::tr("图层 PNG 元数据尺寸与工程声明不同"));
     cancelled(cancel);
     auto image = decodeProjectPng(bytes);
     require(image.width == width && image.height == height &&
                 record.at("image_fingerprint").get<std::string>() == imageFingerprint(image),
-            "图层 PNG 像素校验失败");
+            edm::tr("图层 PNG 像素校验失败"));
     return image;
 }
 void loadLayerState(PaintProjectDocument& document, const Json& manifest, const fs::path& root,
@@ -880,20 +880,20 @@ void loadLayerState(PaintProjectDocument& document, const Json& manifest, const 
     require(state.is_object() && state.value("version", 0) == 1 && state.at("layers").is_array() &&
                 !state["layers"].empty() && state["layers"].size() <= 64 && state.at("canvases").is_array() &&
                 !state["canvases"].empty() && state["canvases"].size() <= document.images.size(),
-            "图层工程结构或版本无效");
-    const auto active = unsignedInteger(state.at("active_layer"), UINT64_MAX, "活动图层编号无效");
+            edm::tr("图层工程结构或版本无效"));
+    const auto active = unsignedInteger(state.at("active_layer"), UINT64_MAX, edm::tr("活动图层编号无效"));
     PaintCanvasLayers metadata;
     metadata.base = PaintImage(1, 1);
     metadata.activeLayer = active;
     std::vector<PaintLayerInfo> layers;
     for (const auto& entry : state["layers"]) {
         PaintLayerInfo layer;
-        layer.id = unsignedInteger(entry.at("id"), UINT64_MAX, "图层编号无效");
+        layer.id = unsignedInteger(entry.at("id"), UINT64_MAX, edm::tr("图层编号无效"));
         layer.name = entry.at("name").get<std::string>();
         layer.visible = entry.at("visible").get<bool>();
-        require(entry.at("opacity").is_number(), "图层不透明度不是数字");
+        require(entry.at("opacity").is_number(), edm::tr("图层不透明度不是数字"));
         const double opacity = entry["opacity"].get<double>();
-        require(std::isfinite(opacity) && opacity >= 0 && opacity <= 1, "图层不透明度必须在 0 与 1 之间");
+        require(std::isfinite(opacity) && opacity >= 0 && opacity <= 1, edm::tr("图层不透明度必须在 0 与 1 之间"));
         layer.opacity = float(opacity);
         layer.preserveAlpha = entry.at("preserve_alpha").get<bool>();
         metadata.layers.push_back({layer, {}});
@@ -908,49 +908,49 @@ void loadLayerState(PaintProjectDocument& document, const Json& manifest, const 
         require(entry.is_object() && entry.at("materials").is_array() && !entry["materials"].empty() &&
                     entry["materials"].size() <= document.images.size() && entry.at("layers").is_array() &&
                     entry["layers"].size() == layers.size(),
-                "图层画布材质或图层数量无效");
+                edm::tr("图层画布材质或图层数量无效"));
         std::vector<int> materials;
         std::set<int> uniqueMaterials;
         const auto& base = entry.at("base");
-        const auto width = unsignedInteger(base.at("width"), 8192, "图层底图宽度无效");
-        const auto height = unsignedInteger(base.at("height"), 8192, "图层底图高度无效");
-        require(width && height, "图层底图尺寸不能为空");
+        const auto width = unsignedInteger(base.at("width"), 8192, edm::tr("图层底图宽度无效"));
+        const auto height = unsignedInteger(base.at("height"), 8192, edm::tr("图层底图高度无效"));
+        require(width && height, edm::tr("图层底图尺寸不能为空"));
         const size_t compositeBytes = size_t(width * height * 4);
         size_t additional = compositeBytes;
         for (const auto& materialValue : entry["materials"]) {
             const int material = int(unsignedInteger(materialValue, uint64_t(std::numeric_limits<int>::max()),
-                                                     "图层画布材质编号无效"));
+                                                     edm::tr("图层画布材质编号无效")));
             require(document.images.contains(material) && !snapshots.contains(material) &&
                         uniqueMaterials.insert(material).second,
-                    "图层画布材质编号无效或重复");
+                    edm::tr("图层画布材质编号无效或重复"));
             const auto& flat = *document.images.at(material);
-            require(flat.width == width && flat.height == height, "图层底图与合成图尺寸不一致");
+            require(flat.width == width && flat.height == height, edm::tr("图层底图与合成图尺寸不一致"));
             materials.push_back(material);
         }
         for (size_t index = 0; index < layers.size(); ++index) {
             const auto& layer = entry["layers"][index];
-            require(unsignedInteger(layer.at("id"), UINT64_MAX, "画布图层编号无效") == layers[index].id &&
+            require(unsignedInteger(layer.at("id"), UINT64_MAX, edm::tr("画布图层编号无效")) == layers[index].id &&
                         layer.at("tiles").is_array() &&
                         layer["tiles"].size() <= ((width + 63) / 64) * ((height + 63) / 64),
-                    "画布图层顺序或稀疏块数量无效");
+                    edm::tr("画布图层顺序或稀疏块数量无效"));
             std::set<std::pair<uint32_t, uint32_t>> tiles;
             for (const auto& tile : layer["tiles"]) {
-                const auto x = unsignedInteger(tile.at("x"), 8191, "图层块 X 坐标无效");
-                const auto y = unsignedInteger(tile.at("y"), 8191, "图层块 Y 坐标无效");
+                const auto x = unsignedInteger(tile.at("x"), 8191, edm::tr("图层块 X 坐标无效"));
+                const auto y = unsignedInteger(tile.at("y"), 8191, edm::tr("图层块 Y 坐标无效"));
                 require(x < width && y < height && x % 64 == 0 && y % 64 == 0 &&
                             tiles.emplace(uint32_t(x), uint32_t(y)).second,
-                        "图层块坐标越界、未对齐或重复");
-                const auto w = unsignedInteger(tile.at("width"), 64, "图层块宽度无效");
-                const auto h = unsignedInteger(tile.at("height"), 64, "图层块高度无效");
+                        edm::tr("图层块坐标越界、未对齐或重复"));
+                const auto w = unsignedInteger(tile.at("width"), 64, edm::tr("图层块宽度无效"));
+                const auto h = unsignedInteger(tile.at("height"), 64, edm::tr("图层块高度无效"));
                 require(w == std::min(uint64_t(64), width - x) && h == std::min(uint64_t(64), height - y),
-                        "图层块尺寸与画布边缘不一致");
+                        edm::tr("图层块尺寸与画布边缘不一致"));
                 additional += size_t(w * h * 4);
                 require(additional + compositeBytes <= paintProjectByteBudget,
-                        "单画布底图、合成图和图层像素超过 2 GiB");
+                        edm::tr("单画布底图、合成图和图层像素超过 2 GiB"));
             }
         }
         require(additional + compositeBytes <= options.maxExpandedBytes - expanded,
-                "工程底图、合成图和图层像素展开后超过加载预算");
+                edm::tr("工程底图、合成图和图层像素展开后超过加载预算"));
         expanded += additional + compositeBytes;
         auto snapshot = std::make_shared<PaintCanvasLayers>();
         snapshot->base = loadLayerImage(base, root, cancel);
@@ -968,15 +968,15 @@ void loadLayerState(PaintProjectDocument& document, const Json& manifest, const 
         verified.restoreLayers(*snapshot);
         for (int material : materials) {
             require(sameImage(verified.image(), *document.images.at(material)),
-                    "完整图层合成结果与工程预览不一致");
+                    edm::tr("完整图层合成结果与工程预览不一致"));
             snapshots.emplace(material, snapshot);
         }
     }
-    require(snapshots.size() == document.images.size(), "完整图层数据未覆盖全部绘制材质");
+    require(snapshots.size() == document.images.size(), edm::tr("完整图层数据未覆盖全部绘制材质"));
     if (state.contains("expanded_bytes"))
-        require(unsignedInteger(state["expanded_bytes"], paintProjectByteBudget, "图层预算声明无效") ==
+        require(unsignedInteger(state["expanded_bytes"], paintProjectByteBudget, edm::tr("图层预算声明无效")) ==
                     expanded,
-                "图层工程实际展开像素数与声明不同");
+                edm::tr("图层工程实际展开像素数与声明不同"));
     document.layerCanvases = std::move(snapshots);
     document.layers = std::move(layers);
     document.activeLayer = active;
@@ -991,12 +991,12 @@ void appendWarnings(PaintProjectDocument& document, const Json& warnings) {
 void restoreOriginalDiffuse(PaintProjectDocument& document, const Scene& scene, const Json& manifest,
                             const fs::path& directory, const std::atomic_bool* cancel) {
     if (!manifest.contains("original_diffuse")) {
-        document.warnings.push_back("旧版工程未保存编辑前的漫反射贴图；取消“浏览已编辑的涂装”只能显示该工程已"
-                                    "保存的成品，无法还原此前绘制。");
+        document.warnings.push_back(edm::tr("旧版工程未保存编辑前的漫反射贴图；取消“浏览已编辑的涂装”只能显示该工程已"
+                                    "保存的成品，无法还原此前绘制。"));
         return;
     }
     const auto& originals = manifest["original_diffuse"];
-    require(originals.is_array() && originals.size() <= document.images.size(), "工程原图绑定数量无效");
+    require(originals.is_array() && originals.size() <= document.images.size(), edm::tr("工程原图绑定数量无效"));
     std::set<std::string> expected, restored;
     for (const auto& [material, image] : document.images)
         expected.insert(lower(scene.materials[material].name));
@@ -1005,10 +1005,10 @@ void restoreOriginalDiffuse(PaintProjectDocument& document, const Scene& scene, 
         const int material = original.at("material").get<int>();
         require(document.images.contains(material) && original.at("material_name").is_string() &&
                     original["material_name"] == scene.materials[material].name,
-                "工程原图绑定与已绘制材质不匹配");
+                edm::tr("工程原图绑定与已绘制材质不匹配"));
         const auto& name = scene.materials[material].name;
         const auto key = std::make_pair(lower(name), 0);
-        require(restored.insert(key.first).second, "工程原图材质绑定重复");
+        require(restored.insert(key.first).second, edm::tr("工程原图材质绑定重复"));
         const auto state = original.at("state").get<std::string>();
         if (state == "default") {
             document.livery->textures.erase(key);
@@ -1025,63 +1025,63 @@ void restoreOriginalDiffuse(PaintProjectDocument& document, const Scene& scene, 
                         !relative.has_root_directory() && file.find(':') == std::string::npos &&
                         file.find('\0') == std::string::npos &&
                         lower(pathString(relative.extension())) == ".dds",
-                    "工程原图必须为工程内的 DDS 相对路径");
+                    edm::tr("工程原图必须为工程内的 DDS 相对路径"));
             const auto path = fs::weakly_canonical(directory / relative);
-            require(within(path, directory), "工程原图路径超出工程目录");
+            require(within(path, directory), edm::tr("工程原图路径超出工程目录"));
             if (fs::is_regular_file(path))
                 binding.name = file;
             else
-                document.warnings.push_back("工程原始漫反射贴图缺失：" + file +
-                                            "；原图浏览保留缺图状态，绘制内容仍可使用。");
+                document.warnings.push_back(edm::tr("工程原始漫反射贴图缺失：") + file +
+                                            edm::tr("；原图浏览保留缺图状态，绘制内容仍可使用。"));
         } else
-            require(state == "missing", "工程原图状态无效");
+            require(state == "missing", edm::tr("工程原图状态无效"));
         // Keep an explicit blank local binding for missing originals. Removing the binding
         // would silently substitute a game/default texture (or the project's edited DDS).
         document.livery->textures[key] = std::move(binding);
     }
-    require(restored == expected, "工程原图绑定未覆盖全部已绘制材质");
+    require(restored == expected, edm::tr("工程原图绑定未覆盖全部已绘制材质"));
 }
 void restoreSnapshot(PaintProjectDocument& document, const Json& appearance) {
     require(appearance.is_object() && appearance.value("version", 0) == 1 && appearance.contains("livery"),
-            "恢复工程的外观快照无效");
+            edm::tr("恢复工程的外观快照无效"));
     document.restoreAppearance = true;
     document.textureDirectory = wide(appearance.at("texture_directory").get<std::string>());
     if (!document.textureDirectory.empty() && !fs::is_directory(document.textureDirectory))
-        document.warnings.push_back("原额外贴图目录不存在：" + pathString(document.textureDirectory));
+        document.warnings.push_back(edm::tr("原额外贴图目录不存在：") + pathString(document.textureDirectory));
     const auto& saved = appearance.at("livery");
     if (saved.is_null())
         return; // Explicit default appearance, distinct from an old absent snapshot.
-    require(saved.is_object(), "恢复工程涂装快照无效");
+    require(saved.is_object(), edm::tr("恢复工程涂装快照无效"));
     auto livery = std::make_shared<Livery>();
     livery->path = wide(saved.at("path").get<std::string>());
     livery->entry = saved.at("entry").get<std::string>();
     livery->name = saved.at("name").get<std::string>();
     livery->unit = saved.at("unit").get<std::string>();
     livery->origin = saved.at("origin").get<std::string>();
-    require(saved.at("textures").is_array() && saved["textures"].size() <= 100000, "恢复工程贴图绑定无效");
+    require(saved.at("textures").is_array() && saved["textures"].size() <= 100000, edm::tr("恢复工程贴图绑定无效"));
     for (const auto& row : saved["textures"]) {
         TextureOverride binding;
         binding.material = row.at("material").get<std::string>();
         binding.slot = row.at("slot").get<int>();
         binding.name = row.at("name").get<std::string>();
         binding.common = row.at("common").get<bool>();
-        require(binding.slot >= 0 && binding.slot <= 100000, "恢复工程贴图槽位无效");
+        require(binding.slot >= 0 && binding.slot <= 100000, edm::tr("恢复工程贴图槽位无效"));
         require(
             livery->textures.emplace(std::make_pair(lower(binding.material), binding.slot), binding).second,
-            "恢复工程贴图绑定重复");
+            edm::tr("恢复工程贴图绑定重复"));
     }
-    require(saved.at("custom_args").is_object(), "恢复工程参数快照无效");
+    require(saved.at("custom_args").is_object(), edm::tr("恢复工程参数快照无效"));
     for (auto it = saved["custom_args"].begin(); it != saved["custom_args"].end(); ++it) {
         size_t used = 0;
         int argument = std::stoi(it.key(), &used);
-        require(used == it.key().size() && argument >= 0 && it.value().is_number(), "恢复工程参数编号无效");
+        require(used == it.key().size() && argument >= 0 && it.value().is_number(), edm::tr("恢复工程参数编号无效"));
         const double value = it.value().get<double>();
-        require(std::isfinite(value), "恢复工程参数必须为有限数字");
+        require(std::isfinite(value), edm::tr("恢复工程参数必须为有限数字"));
         livery->args[argument] = value;
     }
-    require(saved.at("countries").is_array(), "恢复工程国家列表无效");
+    require(saved.at("countries").is_array(), edm::tr("恢复工程国家列表无效"));
     for (const auto& country : saved["countries"])
-        require(country.is_string(), "恢复工程国家名称无效");
+        require(country.is_string(), edm::tr("恢复工程国家名称无效"));
     livery->countries = saved["countries"];
     livery->evaluation = saved.value("evaluation", Json::object());
     if (saved.contains("warnings") && saved["warnings"].is_array())
@@ -1089,7 +1089,7 @@ void restoreSnapshot(PaintProjectDocument& document, const Json& appearance) {
             if (warning.is_string())
                 livery->warnings.push_back(warning.get<std::string>());
     if (livery->path.empty() || !fs::is_regular_file(livery->path))
-        document.warnings.push_back("原涂装路径不存在，已恢复求值结果，但外部贴图可能不可用：" +
+        document.warnings.push_back(edm::tr("原涂装路径不存在，已恢复求值结果，但外部贴图可能不可用：") +
                                     pathString(livery->path));
     appendWarnings(document, livery->warnings);
     document.livery = std::move(livery);
@@ -1120,10 +1120,10 @@ PaintProjectDocument loadPaintDocument(const Scene& scene, const fs::path& proje
     } else {
         const auto directory = fs::weakly_canonical(project.parent_path());
         const auto description = fs::weakly_canonical(directory / "description.lua");
-        require(within(description, directory), "工程 description.lua 路径超出工程目录");
+        require(within(description, directory), edm::tr("工程 description.lua 路径超出工程目录"));
         if (fs::is_regular_file(description)) {
             cancelled(cancel);
-            auto livery = std::make_shared<Livery>(readLivery(description, "", "绘制工程"));
+            auto livery = std::make_shared<Livery>(readLivery(description, "", edm::tr("绘制工程")));
             for (const auto& [key, binding] : livery->textures)
                 if (!binding.common) {
                     const auto relative = fs::path(wide(binding.name));
@@ -1132,7 +1132,7 @@ PaintProjectDocument loadPaintDocument(const Scene& scene, const fs::path& proje
                                 binding.name.find(':') == std::string::npos &&
                                 binding.name.find('\0') == std::string::npos &&
                                 within(fs::weakly_canonical(directory / relative), directory),
-                            "工程涂装贴图引用超出工程目录");
+                            edm::tr("工程涂装贴图引用超出工程目录"));
                 }
             document.livery = std::move(livery);
             document.textureDirectory = directory;
@@ -1141,13 +1141,13 @@ PaintProjectDocument loadPaintDocument(const Scene& scene, const fs::path& proje
             for (const auto& dependency : manifest.value("dependencies", Json::array())) {
                 const auto path =
                     fs::weakly_canonical(directory / wide(dependency.at("file").get<std::string>()));
-                require(within(path, directory), "工程依赖贴图路径超出工程目录");
+                require(within(path, directory), edm::tr("工程依赖贴图路径超出工程目录"));
                 if (!fs::is_regular_file(path))
-                    document.warnings.push_back("工程依赖贴图缺失：" + pathString(path.filename()));
+                    document.warnings.push_back(edm::tr("工程依赖贴图缺失：") + pathString(path.filename()));
             }
             restoreOriginalDiffuse(document, scene, manifest, directory, cancel);
         } else
-            document.warnings.push_back("工程 description.lua 缺失，已恢复绘制图像并保留当前外观。");
+            document.warnings.push_back(edm::tr("工程 description.lua 缺失，已恢复绘制图像并保留当前外观。"));
     }
     cancelled(cancel);
     return document;

@@ -128,18 +128,18 @@ void classify(AnimationFinding& finding, const AnalysisBounds& model, const std:
               bool translated, bool scaled) {
     if (finding.textureOnly) {
         finding.part = "dynamic_number";
-        finding.label = "动态编号（纹理）";
-        finding.motion = "纹理选择";
+        finding.label = edm::tr("动态编号（纹理）");
+        finding.motion = edm::tr("纹理选择");
         finding.confidence = 1;
-        finding.evidence.push_back("该参数连接编号纹理选择器，没有空间位移轨道。");
+        finding.evidence.push_back(edm::tr("该参数连接编号纹理选择器，没有空间位移轨道。"));
         return;
     }
     if (finding.movingSamples == 0) {
-        finding.motion = finding.visibilityChanges ? "显示 / 隐藏" : "无可测空间位移";
+        finding.motion = finding.visibilityChanges ? edm::tr("显示 / 隐藏") : edm::tr("无可测空间位移");
         finding.evidence.push_back(
             finding.visibilityChanges
-                ? "采样中只发现可见性切换，已排除零缩放造成的伪位移。"
-                : "在采样姿态中没有可测位移；可能是材质参数、条件动画或未覆盖的小部件。");
+                ? edm::tr("采样中只发现可见性切换，已排除零缩放造成的伪位移。")
+                : edm::tr("在采样姿态中没有可测位移；可能是材质参数、条件动画或未覆盖的小部件。"));
         return;
     }
     const V3 extent = model.extent().cwiseMax(V3::Constant(1e-6));
@@ -152,20 +152,20 @@ void classify(AnimationFinding& finding, const AnalysisBounds& model, const std:
                             2 / extent.z();
     const bool rear = at.x() < .27, front = at.x() > .57, low = at.y() < .35, upper = at.y() > .53,
                middle = lateral < .30, horizontal = shape.y() < .28 && shape.z() > shape.y() * .7;
-    finding.location = front ? "前部" : rear ? "后部" : "中部";
-    finding.location += low ? " · 下方" : upper ? " · 上方" : " · 中层";
+    finding.location = front ? edm::tr("前部") : rear ? edm::tr("后部") : edm::tr("中部");
+    finding.location += low ? edm::tr(" · 下方") : upper ? edm::tr(" · 上方") : edm::tr(" · 中层");
     if (finding.bounds.minimum.z() < model.center().z() - extent.z() * .12 &&
         finding.bounds.maximum.z() > model.center().z() + extent.z() * .12)
-        finding.location += " · 两侧";
+        finding.location += edm::tr(" · 两侧");
     else if (lateral > .15)
-        finding.location += at.z() < .5 ? " · 左侧" : " · 右侧";
+        finding.location += at.z() < .5 ? edm::tr(" · 左侧") : edm::tr(" · 右侧");
     else
-        finding.location += " · 中央";
-    finding.motion = rotated && translated ? "旋转与平移"
-                     : rotated             ? "旋转"
-                     : translated          ? "平移"
-                     : scaled              ? "形变 / 缩放"
-                                           : "复合运动";
+        finding.location += edm::tr(" · 中央");
+    finding.motion = rotated && translated ? edm::tr("旋转与平移")
+                     : rotated             ? edm::tr("旋转")
+                     : translated          ? edm::tr("平移")
+                     : scaled              ? edm::tr("形变 / 缩放")
+                                           : edm::tr("复合运动");
     auto add = [&](const char* code, const char* label, double score) {
         if (score > .25)
             finding.candidates.push_back({code, label, std::clamp(score, 0., .96)});
@@ -188,25 +188,25 @@ void classify(AnimationFinding& finding, const AnalysisBounds& model, const std:
     // spatially plausible candidate; an unrelated name cannot turn a tail into a canopy.
     const bool belowBody = finding.bounds.minimum.y() < model.minimum.y() - extent.y() * .08;
     if (low && lateral < .70 && span.x() < .48 && !rear)
-        add("landing_gear", "起落架 / 轮胎", .57 + (belowBody ? .12 : 0) + (gearName ? .22 : 0));
+        add("landing_gear", edm::tr("起落架 / 轮胎"), .57 + (belowBody ? .12 : 0) + (gearName ? .22 : 0));
     if (front && middle && at.y() > .40 && shape.x() > .085 && shape.z() > .025 && span.x() < .50)
-        add("canopy", "座舱盖", .57 + (upper ? .09 : 0) + (canopyName ? .23 : 0));
+        add("canopy", edm::tr("座舱盖"), .57 + (upper ? .09 : 0) + (canopyName ? .23 : 0));
     if (front && middle && at.y() > .40 && shape.x() < .12 && crewName)
-        add("crew", "机组人物动作", .86);
+        add("crew", edm::tr("机组人物动作"), .86);
     if (horizontal && outboard > .24 && !rear)
-        add("wing_control", "机翼舵面（襟翼 / 副翼）",
+        add("wing_control", edm::tr("机翼舵面（襟翼 / 副翼）"),
             .57 + (span.x() < .25 ? .10 : 0) + (flapName ? .22 : 0));
     if (rear && (horizontal || elevatorName) && outboard > .12 && rotated)
-        add("horizontal_tail", "水平尾翼 / 升降舵", .66 + (elevatorName ? .23 : 0));
+        add("horizontal_tail", edm::tr("水平尾翼 / 升降舵"), .66 + (elevatorName ? .23 : 0));
     if (rear && (upper || shape.y() > .32) && shape.z() < .20 && rotated)
-        add("rudder", "垂直尾翼 / 方向舵", .59 + (shape.y() > shape.x() ? .12 : 0) + (rudderName ? .23 : 0));
+        add("rudder", edm::tr("垂直尾翼 / 方向舵"), .59 + (shape.y() > shape.x() ? .12 : 0) + (rudderName ? .23 : 0));
     if (outboard > .20 && span.x() > .18 && span.z() > .16 && rotated && !rear)
-        add("wing_mechanism", "机翼后掠 / 折叠机构",
+        add("wing_mechanism", edm::tr("机翼后掠 / 折叠机构"),
             .57 + (finding.dominantAxis.y() > .70 ? .12 : 0) + (wingName ? .23 : 0));
     if (at.x() < .58 && middle && upper && span.x() < .30 && rotated)
-        add("airbrake", "减速板", .48 + (brakeName ? .30 : 0));
+        add("airbrake", edm::tr("减速板"), .48 + (brakeName ? .30 : 0));
     if (at.x() < .20 && lateral < .40 && span.x() < .25)
-        add("engine_nozzle", "发动机喷口", .47 + (scaled ? .09 : 0) + (nozzleName ? .29 : 0));
+        add("engine_nozzle", edm::tr("发动机喷口"), .47 + (scaled ? .09 : 0) + (nozzleName ? .29 : 0));
     std::sort(finding.candidates.begin(), finding.candidates.end(), [](const auto& a, const auto& b) {
         return a.score > b.score || (a.score == b.score && a.part < b.part);
     });
@@ -220,17 +220,17 @@ void classify(AnimationFinding& finding, const AnalysisBounds& model, const std:
             finding.part = best.part;
             finding.label = best.label;
         } else
-            finding.evidence.push_back("空间特征与多个部件相近，保留候选而不强行命名。");
+            finding.evidence.push_back(edm::tr("空间特征与多个部件相近，保留候选而不强行命名。"));
     }
-    finding.evidence.push_back("实际检测到 " + std::to_string(finding.meshes.size()) + " 个网格、" +
-                               std::to_string(finding.movingSamples) + " 个移动采样点；最大位移 " +
+    finding.evidence.push_back(edm::tr("实际检测到 ") + std::to_string(finding.meshes.size()) + edm::tr(" 个网格、") +
+                               std::to_string(finding.movingSamples) + edm::tr(" 个移动采样点；最大位移 ") +
                                number(finding.maximumDisplacement, 3) + " m。");
-    finding.evidence.push_back("位置：" + finding.location + "；移动区域占机体长 / 高 / 宽 " +
+    finding.evidence.push_back(edm::tr("位置：") + finding.location + edm::tr("；移动区域占机体长 / 高 / 宽 ") +
                                number(span.x() * 100, 0) + "% / " + number(span.y() * 100, 0) + "% / " +
                                number(span.z() * 100, 0) + "%。");
     if (gearName || canopyName || flapName || rudderName || elevatorName || wingName || brakeName ||
         nozzleName)
-        finding.evidence.push_back("受影响节点 / 网格名称提供了部件语义佐证，分类同时要求空间位置合理。");
+        finding.evidence.push_back(edm::tr("受影响节点 / 网格名称提供了部件语义佐证，分类同时要求空间位置合理。"));
 }
 } // namespace
 
@@ -283,8 +283,8 @@ AnimationAnalysis analyzeAnimations(const Scene& scene, const Args& baseline, co
             "Invalid animation analysis movement threshold");
     AnimationAnalysis result;
     if (options.revealOtherVisibility)
-        result.warnings.push_back("识别时临时显示其他参数隐藏的部件；不改变预览或导出状态。");
-    result.warnings.push_back("采用 DCS 的 +X 机头、+Y 向上、+Z 右侧坐标；置信度是启发式评分，不是概率。");
+        result.warnings.push_back(edm::tr("识别时临时显示其他参数隐藏的部件；不改变预览或导出状态。"));
+    result.warnings.push_back(edm::tr("采用 DCS 的 +X 机头、+Y 向上、+Z 右侧坐标；置信度是启发式评分，不是概率。"));
     std::vector<std::set<int>> dependencies(scene.nodes.size());
     for (const auto& track : scene.tracks)
         dependencies[track.node].insert(track.arg);
@@ -323,7 +323,7 @@ AnimationAnalysis analyzeAnimations(const Scene& scene, const Args& baseline, co
         samples.push_back(std::move(selection));
     }
     if (samples.size() < nonEmpty)
-        result.warnings.push_back("网格数量超过采样预算，部分网格未覆盖；可增大分析预算后重试。");
+        result.warnings.push_back(edm::tr("网格数量超过采样预算，部分网格未覆盖；可增大分析预算后重试。"));
     auto neutral = evaluate(scene, baseline, std::numeric_limits<int>::min(), options.revealOtherVisibility);
     const auto defaultWorld = scene.evaluate(baseline);
     std::array<std::vector<double>, 3> coordinate;
@@ -337,7 +337,7 @@ AnimationAnalysis analyzeAnimations(const Scene& scene, const Args& baseline, co
                 coordinate[axis].push_back(point.position[axis]);
         }
     if (!all.valid()) {
-        result.warnings.push_back("当前姿态没有可见几何，机身参照范围改用临时显示的采样。");
+        result.warnings.push_back(edm::tr("当前姿态没有可见几何，机身参照范围改用临时显示的采样。"));
         for (const auto& selection : samples)
             for (const auto& point : sample(scene.meshes[selection.mesh], selection, neutral)) {
                 if (!point.visible)
@@ -362,7 +362,7 @@ AnimationAnalysis analyzeAnimations(const Scene& scene, const Args& baseline, co
     for (const auto& [argument, domain] : scene.limits) {
         cancelled(cancel);
         if (progress)
-            progress("识别动画部件 " + std::to_string(++completed) + " / " +
+            progress(edm::tr("识别动画部件 ") + std::to_string(++completed) + " / " +
                      std::to_string(scene.limits.size()));
         cancelled(cancel);
         AnimationFinding finding;

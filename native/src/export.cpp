@@ -256,7 +256,7 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
         }
         d["materials"].push_back(mat);
         if (progress)
-            progress("导出材质 " + std::to_string(i + 1) + " / " + std::to_string(scene.materials.size()));
+            progress(edm::tr("导出材质 ") + std::to_string(i + 1) + " / " + std::to_string(scene.materials.size()));
     }
     if (resolver)
         for (auto& mesh : scene.meshes)
@@ -406,7 +406,7 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
                                           {"material", mesh.material},
                                           {"mode", 4}}})}});
         if (progress && mi % 100 == 0)
-            progress("导出网格 " + std::to_string(mi + 1) + " / " + std::to_string(scene.meshes.size()));
+            progress(edm::tr("导出网格 ") + std::to_string(mi + 1) + " / " + std::to_string(scene.meshes.size()));
     }
     d["animations"] = Json::array();
     std::vector<int> exported;
@@ -508,7 +508,7 @@ ExportPayload buildExportPayload(const Scene& scene, const ExportOptions& option
             exported.push_back(arg);
         }
         if (progress)
-            progress("导出动画参数 " + std::to_string(arg));
+            progress(edm::tr("导出动画参数 ") + std::to_string(arg));
     }
     if (d["animations"].empty())
         d.erase("animations");
@@ -618,8 +618,8 @@ Json exportScene(const Scene& scene, const fs::path& path, const ExportOptions& 
     } catch (...) {
         if (!assetsDirectory.empty())
             throw std::runtime_error(exceptionText() +
-                                     (modelWritten ? "\n模型已导出，但报告写入失败；涂装依赖保存在："
-                                                   : "\n模型导出未完成；涂装依赖已单独保存至：") +
+                                     (modelWritten ? edm::tr("\n模型已导出，但报告写入失败；涂装依赖保存在：")
+                                                   : edm::tr("\n模型导出未完成；涂装依赖已单独保存至：")) +
                                      assetsDirectory);
         throw;
     }

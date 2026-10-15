@@ -52,7 +52,7 @@ canvasLoader(const std::vector<int>& materials) {
         for (int index : missing) {
             require(!cancel || !*cancel, "Cancelled");
             if (progress)
-                progress("自动准备贴图 · " + source->materials.at(index).name);
+                progress(edm::tr("自动准备贴图 · ") + source->materials.at(index).name);
             PaintImage image;
             std::string name;
             if (auto texture = resolver.material(source->materials.at(index))) {
@@ -61,14 +61,14 @@ canvasLoader(const std::vector<int>& materials) {
             } else {
                 const int blankDimension = std::min(2048, dimension);
                 image = PaintImage(blankDimension, blankDimension);
-                name = "自动创建空白贴图";
+                name = edm::tr("自动创建空白贴图");
             }
             require(!cancel || !*cancel, "Cancelled");
             auto canvas = std::make_shared<PaintCanvas>(std::move(image));
             canvas->enableLayers(layers, active);
             bytes += canvas->storageBytes();
             require(bytes <= 2ull * 1024 * 1024 * 1024,
-                    "绘制贴图超过 2 GiB 预算，请缩小覆盖范围或降低新贴图分辨率。");
+                    edm::tr("绘制贴图超过 2 GiB 预算，请缩小覆盖范围或降低新贴图分辨率。"));
             prepared->emplace(index, Entry{std::move(canvas), {}, name, {}});
         }
         return prepared;
@@ -103,10 +103,10 @@ bool requestCanvases(const std::vector<int>& materials, bool synchronous) {
     return false;
 }
 void queueTemplate(Renderer&, const fs::path& path) {
-    require(!controlsBusy(), "请等待当前绘制任务完成");
+    require(!controlsBusy(), edm::tr("请等待当前绘制任务完成"));
     start([this, path](Progress progress, const std::atomic_bool* cancel) {
         if (progress)
-            progress("读取模板 · 下一次落笔自动定位贴图…");
+            progress(edm::tr("读取模板 · 下一次落笔自动定位贴图…"));
         auto loaded = std::make_shared<PaintImage>(PaintImage::load(ImageSource{path}, 8192));
         require(!*cancel, "Cancelled");
         return [this, path, loaded] {
@@ -114,7 +114,7 @@ void queueTemplate(Renderer&, const fs::path& path) {
             pendingTemplateName = pathString(path);
             pendingTemplateTarget = -1;
             tool = 1;
-            status = "模板已就绪 · 下次落笔将模板放入当前图层，其他图层保留";
+            status = edm::tr("模板已就绪 · 下次落笔将模板放入当前图层，其他图层保留");
         };
     });
 }
@@ -129,7 +129,7 @@ bool installLayerTemplate(bool synchronous) {
     history.touch(target, canvas);
     auto apply = [canvas, source, layer](Progress progress, const std::atomic_bool* cancel) {
         if (progress)
-            progress("将模板放入当前图层…");
+            progress(edm::tr("将模板放入当前图层…"));
         require(!cancel || !*cancel, "Cancelled");
         const auto& destination = canvas->image();
         if (source->width == destination.width && source->height == destination.height)
@@ -139,7 +139,7 @@ bool installLayerTemplate(bool synchronous) {
             DirectX::ScratchImage resized;
             require(SUCCEEDED(DirectX::Resize(*texture->pixels.GetImage(0, 0, 0), destination.width,
                                               destination.height, DirectX::TEX_FILTER_DEFAULT, resized)),
-                    "无法将模板缩放到当前贴图大小");
+                    edm::tr("无法将模板缩放到当前贴图大小"));
             PaintImage image(destination.width, destination.height, {0, 0, 0, 0});
             const auto* pixels = resized.GetImage(0, 0, 0);
             for (uint32_t row = 0; row < image.height; ++row)
@@ -178,9 +178,9 @@ std::vector<int> brushMaterials(const StrokeContext& context, const PaintHit& hi
 template <class Options, class Find, class Apply, class Prepare = std::nullptr_t>
 void startAutomaticMapping(Options options, Find find, Apply apply, bool verify, bool projection,
                            bool decal = false, Prepare prepare = nullptr) {
-    require(!controlsBusy(), "请等待当前绘制任务完成");
+    require(!controlsBusy(), edm::tr("请等待当前绘制任务完成"));
     requireWritableLayer();
-    require(mappingImage && surface && surfaceArgs == currentArgs, "请载入图片并等待当前姿态的绘制表面就绪");
+    require(mappingImage && surface && surfaceArgs == currentArgs, edm::tr("请载入图片并等待当前姿态的绘制表面就绪"));
     ensureAliases();
     auto source = mappingImage;
     auto posed = surface;
@@ -236,7 +236,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                 }
                 auto candidates = find(*posed, options, progress, cancel);
                 require(!candidates.materials.empty(),
-                        "图片覆盖范围内没有可绘制的表面，请调整图片位置或贴花范围。");
+                        edm::tr("图片覆盖范围内没有可绘制的表面，请调整图片位置或贴花范围。"));
                 std::map<int, std::vector<int>> groups;
                 for (int id : candidates.materials)
                     groups[aliases.at(id)].push_back(id);
@@ -269,7 +269,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                         throw std::runtime_error("Cancelled");
                     }
                 };
-                history.begin(projection ? "自动多贴图相机投影" : decal ? "表面贴花盖印" : "弧面映射");
+                history.begin(projection ? edm::tr("自动多贴图相机投影") : decal ? edm::tr("表面贴花盖印") : edm::tr("弧面映射"));
                 try {
                     auto next = groups.begin();
                     while (next != groups.end()) {
@@ -286,7 +286,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                             if (existing.contains(index))
                                 task.canvas = existing.at(index);
                             else {
-                                progress("自动载入覆盖位置的贴图 · " + model->materials.at(index).name);
+                                progress(edm::tr("自动载入覆盖位置的贴图 · ") + model->materials.at(index).name);
                                 PaintImage image;
                                 std::string name;
                                 if (auto texture = resolver.material(model->materials.at(index))) {
@@ -295,18 +295,18 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                                 } else {
                                     const int blankDimension = std::min(2048, dimension);
                                     image = PaintImage(blankDimension, blankDimension);
-                                    name = "自动创建空白贴图";
+                                    name = edm::tr("自动创建空白贴图");
                                 }
                                 task.canvas = std::make_shared<PaintCanvas>(std::move(image));
                                 task.canvas->enableLayers(layers, active);
                                 task.allocatedBytes = task.canvas->storageBytes();
                                 bytes += task.allocatedBytes;
                                 require(bytes <= 2ull * 1024 * 1024 * 1024,
-                                        "绘制内容超过 2 GiB，请缩小范围或降低新贴图分辨率；此次操作已回滚。");
+                                        edm::tr("绘制内容超过 2 GiB，请缩小范围或降低新贴图分辨率；此次操作已回滚。"));
                                 prepared->emplace(index, Entry{task.canvas, {}, name, {}});
                             }
                             require(scheduledCanvases.insert(task.canvas).second,
-                                    "同一贴图不能被重复安排到多个映射任务，此次操作已回滚。");
+                                    edm::tr("同一贴图不能被重复安排到多个映射任务，此次操作已回滚。"));
                             checkCancelled();
                             if (verify)
                                 before[index] = task.canvas->image().rgba;
@@ -405,7 +405,7 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                     for (const auto& [index, entry] : *prepared)
                         count(entry.canvas);
                     require(finalBytes <= 2ull * 1024 * 1024 * 1024,
-                            "图层像素超过 2 GiB 编辑预算，此次图片绘制已回滚");
+                            edm::tr("图层像素超过 2 GiB 编辑预算，此次图片绘制已回滚"));
                     outcome->changed = history.commit();
                     outcome->committed = true;
                 } catch (...) {
@@ -438,17 +438,17 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                 }
                 total.changed = outcome->changed;
                 if (!total.changed)
-                    total.warnings = {"覆盖范围内没有像素变化，请调整图片位置、透明度或遮挡设置。"};
+                    total.warnings = {edm::tr("覆盖范围内没有像素变化，请调整图片位置、透明度或遮挡设置。")};
                 if (verify) {
-                    require(total.changed, "自动映射没有改变像素");
+                    require(total.changed, edm::tr("自动映射没有改变像素"));
                     for (const auto& [index, canvas] : verifiedCanvases)
                         after[index] = canvas->image().rgba;
-                    require(history.undo(), "多贴图映射无法撤销");
+                    require(history.undo(), edm::tr("多贴图映射无法撤销"));
                     for (const auto& [index, canvas] : verifiedCanvases)
-                        require(canvas->image().rgba == before.at(index), "多贴图撤销像素不一致");
-                    require(history.redo(), "多贴图映射无法重做");
+                        require(canvas->image().rgba == before.at(index), edm::tr("多贴图撤销像素不一致"));
+                    require(history.redo(), edm::tr("多贴图映射无法重做"));
                     for (const auto& [index, canvas] : verifiedCanvases)
-                        require(canvas->image().rgba == after.at(index), "多贴图重做像素不一致");
+                        require(canvas->image().rgba == after.at(index), edm::tr("多贴图重做像素不一致"));
                 }
                 total.seconds = budget->elapsed();
                 auto result = mappingReport(total);
@@ -474,8 +474,8 @@ void startAutomaticMapping(Options options, Find find, Apply apply, bool verify,
                 }
                 return [this, result, projection, decal] {
                     (projection ? projectionResult : decal ? decalResult : wrapResult) = result;
-                    status = std::string(projection ? "投影完成" : "贴花完成") + " · 自动写入 " +
-                             std::to_string(result.at("materials").size()) + " 个材质 · 可一次撤销";
+                    status = std::string(projection ? edm::tr("投影完成") : edm::tr("贴花完成")) + edm::tr(" · 自动写入 ") +
+                             std::to_string(result.at("materials").size()) + edm::tr(" 个材质 · 可一次撤销");
                 };
             },
             false, cleanup);

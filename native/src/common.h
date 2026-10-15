@@ -1,4 +1,5 @@
 #pragma once
+#include "localization.h"
 #include <windows.h>
 #include <objbase.h>
 #include <Eigen/Dense>

@@ -204,7 +204,7 @@ PaintMappingCandidates findDecalMaterials(const PaintSurface& surface, const Sur
             if ((result.examinedTriangles & 1023) == 0) {
                 checkWork(started, options.limits, cancel);
                 if (progress)
-                    progress("识别表面贴花覆盖区域 · " + std::to_string(result.examinedTriangles));
+                    progress(edm::tr("识别表面贴花覆盖区域 · ") + std::to_string(result.examinedTriangles));
             }
             ++result.examinedTriangles;
             auto triangle = surface.triangle(primitive);
@@ -238,7 +238,7 @@ PaintMappingReport applySurfaceDecal(const PaintSurface& surface, PaintCanvas& c
              options.externalStroke, options.targetMaterials);
     const auto frame = surfaceDecalFrame(options);
     validateSurfaceDecalPatch(surface, options);
-    Operation operation(canvas, "表面贴花", options.limits, std::move(progress), cancel,
+    Operation operation(canvas, edm::tr("表面贴花"), options.limits, std::move(progress), cancel,
                         options.externalStroke);
     if (options.opacity <= 0)
         return operation.finish();

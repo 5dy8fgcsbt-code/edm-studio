@@ -215,7 +215,7 @@ std::shared_ptr<GpuModel> GpuModel::prepare(ID3D11Device* device, std::shared_pt
         out->data.push_back(data);
         out->draws.push_back(draw);
         if (progress && mi % 100 == 0)
-            progress("准备 GPU 网格 " + std::to_string(mi + 1) + " / " +
+            progress(edm::tr("准备 GPU 网格 ") + std::to_string(mi + 1) + " / " +
                      std::to_string(scene->meshes.size()));
     }
     out->geometryBytes = vertices.size() * sizeof(GpuVertex) + indices.size() * 4;

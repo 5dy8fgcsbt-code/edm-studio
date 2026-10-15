@@ -1,4 +1,5 @@
 #pragma once
+#include "localization.h"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -42,11 +43,11 @@ class PaintStrokePath {
 
     static void validate(PaintStrokePoint point, double spacing) {
         if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(spacing) || spacing <= 0)
-            throw std::invalid_argument("无效的画笔轨迹坐标或采样间距");
+            throw std::invalid_argument(edm::tr("无效的画笔轨迹坐标或采样间距"));
     }
     void checkRoom(uint64_t samples) const {
         if (queue_.size() >= limits_.queuedInputs || samples > limits_.pendingSamples - pending_)
-            throw std::length_error("画笔轨迹积压过多，请取消此笔后缩放视角、增大笔刷或降低移动速度");
+            throw std::length_error(edm::tr("画笔轨迹积压过多，请取消此笔后缩放视角、增大笔刷或降低移动速度"));
     }
 
   public:
@@ -55,7 +56,7 @@ class PaintStrokePath {
 
     explicit PaintStrokePath(PaintStrokePathLimits limits = {}) : limits_(limits) {
         if (!limits_.queuedInputs || !limits_.pendingSamples || limits_.pendingSamples > 1000000)
-            throw std::invalid_argument("画笔轨迹队列预算无效（待处理样点必须在 1 到 1000000 之间）");
+            throw std::invalid_argument(edm::tr("画笔轨迹队列预算无效（待处理样点必须在 1 到 1000000 之间）"));
     }
     bool started() const {
         return started_;
@@ -85,7 +86,7 @@ class PaintStrokePath {
     void begin(PaintStrokePoint point, double spacing, uint64_t context = 0) {
         validate(point, spacing);
         if (started_ && !drained())
-            throw std::logic_error("上一笔画笔轨迹尚未完成");
+            throw std::logic_error(edm::tr("上一笔画笔轨迹尚未完成"));
         queue_.push_back({point, point, context, 1, 1});
         lastConsumed_.reset();
         lastInput_ = point;
@@ -101,15 +102,15 @@ class PaintStrokePath {
     void append(PaintStrokePoint point, double spacing, uint64_t context = 0) {
         validate(point, spacing);
         if (!started_ || released_)
-            throw std::logic_error("只能向尚未释放的画笔轨迹追加输入");
+            throw std::logic_error(edm::tr("只能向尚未释放的画笔轨迹追加输入"));
         const double distance = std::hypot(point.x - lastInput_.x, point.y - lastInput_.y);
         if (!std::isfinite(distance))
-            throw std::invalid_argument("画笔轨迹距离超限");
+            throw std::invalid_argument(edm::tr("画笔轨迹距离超限"));
         if (distance <= 1e-9)
             return;
         const double count = std::ceil(distance / spacing);
         if (!std::isfinite(count) || count > double(limits_.pendingSamples))
-            throw std::length_error("画笔采样过密，请缩放视角或增大笔刷");
+            throw std::length_error(edm::tr("画笔采样过密，请缩放视角或增大笔刷"));
         const uint64_t samples = uint64_t(std::max(1., count));
         checkRoom(samples);
         queue_.push_back({lastInput_, point, context, samples, 1});

@@ -73,15 +73,15 @@ std::optional<fs::path> dialog(HWND hwnd, bool save, bool folder, const wchar_t*
         COMDLG_FILTERSPEC filters[4];
         UINT count = 1;
         if (std::wstring_view(extension) == L"edm")
-            filters[0] = {L"DCS 模型 (*.edm)", L"*.edm"};
+            filters[0] = {edm::trw(L"DCS 模型 (*.edm)"), L"*.edm"};
         else if (save) {
-            filters[0] = {L"GLB 单文件模型 (*.glb)", L"*.glb"};
-            filters[1] = {L"glTF 嵌入式模型 (*.gltf)", L"*.gltf"};
-            filters[2] = {L"OBJ 当前姿态 + MTL 贴图 (*.obj)", L"*.obj"};
-            filters[3] = {L"FBX 模型与动画 (*.fbx)", L"*.fbx"};
+            filters[0] = {edm::trw(L"GLB 单文件模型 (*.glb)"), L"*.glb"};
+            filters[1] = {edm::trw(L"glTF 嵌入式模型 (*.gltf)"), L"*.gltf"};
+            filters[2] = {edm::trw(L"OBJ 当前姿态 + MTL 贴图 (*.obj)"), L"*.obj"};
+            filters[3] = {edm::trw(L"FBX 模型与动画 (*.fbx)"), L"*.fbx"};
             count = 4;
         } else
-            filters[0] = {L"DCS 涂装 (description.lua; *.zip)", L"*.lua;*.zip"};
+            filters[0] = {edm::trw(L"DCS 涂装 (description.lua; *.zip)"), L"*.lua;*.zip"};
         d->SetFileTypes(count, filters);
         if (save && count == 4)
             for (UINT i = 0; i < 4; ++i)
@@ -152,14 +152,16 @@ class App {
     Args args, baseline, initialArgs;
     std::vector<fs::path> extraRoots;
     fs::path textureDir, settingsPath;
+    int nextLanguage = language() == Language::English ? 1 : 0;
     Json settings = Json::object(), luaContext = Json::object();
-    std::string contextText = "{}", error, notice = "拖入 EDM 文件，开始查看模型", argSearch, liverySearch,
+    std::string contextText = "{}", error, notice = edm::tr("拖入 EDM 文件，开始查看模型"), argSearch, liverySearch,
                 bortText, log;
     int selectedArg = -1, exportMode = 0, exportFormat = 0, rightTab = 0, textureQuality = 2;
     double textureBudgetGB = 2, textureBudgetInputGB = 2;
     std::optional<double> initialTextureBudget;
     fs::path diagnosticSettings;
-    float duration = 3, leftWidth = 262, rightWidth = 300;
+    float duration = 3, leftWidth = language() == Language::English ? 280.f : 262.f,
+          rightWidth = language() == Language::English ? 320.f : 300.f;
     bool playing = false, exportTextures = true, exportCurrentPose = false,
          showPanels = true, poseDirty = false, shutdown = false,
          loading = false, exporting = false, scanning = false, openContext = false, openRoots = false;
@@ -298,7 +300,7 @@ class App {
                     (*it)->thread.join();
                 if ((*it)->kind == "export" && (*it)->cancel) {
                     exporting = false;
-                    notice = "导出任务已停止";
+                    notice = edm::tr("导出任务已停止");
                 }
                 it = jobs.erase(it);
             } else
@@ -327,21 +329,22 @@ class App {
                 budget != settings.end() && budget->is_number())
                 textureBudgetGB = previewBudgetGB(budget->get<double>());
             textureBudgetInputGB = textureBudgetGB;
-            leftWidth = settings.value("left_width", 262.f);
-            rightWidth = settings.value("right_width", 300.f);
+            leftWidth = settings.value("left_width", leftWidth);
+            rightWidth = settings.value("right_width", rightWidth);
         } catch (...) {
-            record("设置读取失败：" + exceptionText());
+            record(edm::tr("设置读取失败：") + exceptionText());
         }
     }
-    void saveSettings() {
+    bool saveSettings() {
         if ((smoke && diagnosticSettings.empty()) || settingsPath.empty())
-            return;
+            return false;
         try {
             settings["extra_roots"] = Json::array();
             for (auto& p : extraRoots)
                 settings["extra_roots"].push_back(pathString(p));
             settings["texture_directory"] = pathString(textureDir);
             settings["texture_quality"] = textureQuality;
+            settings["language"] = languageCode(nextLanguage ? Language::English : Language::Chinese);
             settings["export_format"] = exportFormat;
             settings["export_model_only"] = exportCurrentPose;
             settings["export_animation_scope"] = exportMode;
@@ -349,7 +352,9 @@ class App {
             settings["left_width"] = leftWidth;
             settings["right_width"] = rightWidth;
             writeJson(settingsPath, settings);
+            return true;
         } catch (...) {
+            return false;
         }
     }
     void openModel(const fs::path& path) {
@@ -386,7 +391,7 @@ class App {
         scanning = false;
         currentPath = path;
         error.clear();
-        notice = "正在读取 " + pathString(path.filename());
+        notice = edm::tr("正在读取 ") + pathString(path.filename());
         uint64_t gen = generation;
         auto device = renderer.device;
         auto attachments = initialAttachments;
@@ -429,10 +434,10 @@ class App {
                     if (names.size() < 500 && names.find(name) == std::string::npos)
                         names += name + "\n";
                 }
-                notice = (scene.collisionOnly() ? "碰撞模型已载入 · " : "模型已载入 · ") +
+                notice = (scene.collisionOnly() ? edm::tr("碰撞模型已载入 · ") : edm::tr("模型已载入 · ")) +
                          std::to_string(std::count_if(scene.meshes.begin(), scene.meshes.end(),
                                                       [](const auto& mesh) { return mesh.lodActive; })) +
-                         " 个网格";
+                         edm::tr(" 个网格");
                 record(scene.summary().dump(2));
                 applyInitialArguments();
                 if (!paintMaterial.empty() || !autoPaintDirectory.empty() || !decalTestDirectory.empty() ||
@@ -452,14 +457,14 @@ class App {
         return findConnector(scene, name);
     }
     void attachModel(int target, const fs::path& path) {
-        require(renderer.model && !loading && !attaching && !paint.busy(), "请等待模型与绘制任务完成");
+        require(renderer.model && !loading && !attaching && !paint.busy(), edm::tr("请等待模型与绘制任务完成"));
         auto source = renderer.model->scene;
-        require(target >= 0 && target < int(source->nodes.size()), "无效挂点");
+        require(target >= 0 && target < int(source->nodes.size()), edm::tr("无效挂点"));
         attaching = true;
         playing = false;
         const uint64_t gen = generation;
         auto device = renderer.device;
-        notice = "正在连接 " + pathString(path.filename()) + " → " + source->nodes[target].name;
+        notice = edm::tr("正在连接 ") + pathString(path.filename()) + " → " + source->nodes[target].name;
         launch(
             "attachment",
             [source, target, path, device](Progress progress, const std::atomic_bool* cancel) {
@@ -492,10 +497,10 @@ class App {
                 }
                 startTextures(true);
                 const auto& a = renderer.model->scene->attachments.back();
-                notice = "已连接 " + pathString(a.source.filename()) + " → " +
-                         renderer.model->scene->nodes[a.targetNode].name + " · 可直接绘制外挂涂装";
+                notice = edm::tr("已连接 ") + pathString(a.source.filename()) + " → " +
+                         renderer.model->scene->nodes[a.targetNode].name + edm::tr(" · 可直接绘制外挂涂装");
                 if (a.attachNode < 0)
-                    notice += "（未找到 AttachPoint，已按模型原点连接）";
+                    notice += edm::tr("（未找到 AttachPoint，已按模型原点连接）");
                 record(notice);
                 for (const auto& warning : renderer.model->scene->warnings)
                     record(warning);
@@ -561,14 +566,14 @@ class App {
             draw->AddCircleFilled(marker.position, 1.7f, color);
         }
         draw->PopClipRect();
-        bool captured = ImGui::IsPopupOpen("连接点操作");
+        bool captured = ImGui::IsPopupOpen(edm::tr("连接点操作"));
         if (hoveredConnector >= 0) {
             bool occupied = std::any_of(scene.attachments.begin(), scene.attachments.end(),
                                         [&](const auto& a) { return a.targetNode == hoveredConnector; });
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             ImGui::BeginTooltip();
             ImGui::TextUnformatted(scene.nodes[hoveredConnector].name.c_str());
-            ImGui::TextDisabled(occupied ? "点击显示卸载按钮" : "点击加载 EDM · 自动对齐 AttachPoint");
+            ImGui::TextDisabled(occupied ? edm::tr("点击显示卸载按钮") : edm::tr("点击加载 EDM · 自动对齐 AttachPoint"));
             ImGui::EndTooltip();
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !attaching && !loading && !paint.busy()) {
                 int target = hoveredConnector;
@@ -578,15 +583,15 @@ class App {
                     const auto marker = std::find_if(markers.begin(), markers.end(),
                                                      [target](const auto& m) { return m.node == target; });
                     connectorPopupPosition = {marker->position.x + 14, marker->position.y + 8};
-                    ImGui::OpenPopup("连接点操作");
-                } else if (auto path = dialog(hwnd, false, false, L"选择要连接到挂点的 EDM"))
+                    ImGui::OpenPopup(edm::tr("连接点操作"));
+                } else if (auto path = dialog(hwnd, false, false, edm::trw(L"选择要连接到挂点的 EDM")))
                     attachModel(target, *path);
             }
             captured = true;
         }
         ImGui::SetNextWindowPos(connectorPopupPosition, ImGuiCond_Appearing);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {14, 12});
-        if (ImGui::BeginPopup("连接点操作")) {
+        if (ImGui::BeginPopup(edm::tr("连接点操作"))) {
             captured = connectorPopupVisible = true;
             bool valid = connectorSelectionScene == renderer.model->scene && selectedConnector >= 0 &&
                          selectedConnector < int(scene.nodes.size()) &&
@@ -596,13 +601,13 @@ class App {
                 ImGui::CloseCurrentPopup();
             } else {
                 ImGui::TextUnformatted(scene.nodes[selectedConnector].name.c_str());
-                ImGui::TextDisabled("卸载此处外挂及其下级物体");
+                ImGui::TextDisabled(edm::tr("卸载此处外挂及其下级物体"));
                 ImGui::Spacing();
                 ImGui::BeginDisabled(attaching || loading || paint.busy());
                 ImGui::PushStyleColor(ImGuiCol_Button, {.44f, .25f, .10f, 1});
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered, {.62f, .35f, .12f, 1});
                 ImGui::PushStyleColor(ImGuiCol_ButtonActive, {.72f, .41f, .14f, 1});
-                bool unload = ImGui::Button("卸载", {172, 32});
+                bool unload = ImGui::Button(edm::tr("卸载"), {172, 32});
                 auto min = ImGui::GetItemRectMin(), max = ImGui::GetItemRectMax();
                 unloadButtonPosition = {(min.x + max.x) * .5f, (min.y + max.y) * .5f};
                 ImGui::PopStyleColor(3);
@@ -615,7 +620,7 @@ class App {
             ImGui::EndPopup();
         }
         ImGui::PopStyleVar();
-        if (!ImGui::IsPopupOpen("连接点操作")) {
+        if (!ImGui::IsPopupOpen(edm::tr("连接点操作"))) {
             selectedConnector = -1;
             connectorSelectionScene.reset();
         }
@@ -658,7 +663,7 @@ class App {
                 for (size_t i = 0; i < source->materials.size(); i++) {
                     if (*cancel)
                         break;
-                    progress("匹配贴图 " + std::to_string(i + 1) + " / " +
+                    progress(edm::tr("匹配贴图 ") + std::to_string(i + 1) + " / " +
                              std::to_string(source->materials.size()));
                     for (int slot = 0; slot < 3; slot++) {
                         auto found =
@@ -680,7 +685,7 @@ class App {
                         break;
                     auto& found = requests[i];
                     auto key = found.key();
-                    progress("加载贴图 " + std::to_string(i + 1) + " / " + std::to_string(requests.size()));
+                    progress(edm::tr("加载贴图 ") + std::to_string(i + 1) + " / " + std::to_string(requests.size()));
                     try {
                         size_t allowance = (budget - used) / std::max(size_t(1), requests.size() - i);
                         if (auto old = cached.find(key);
@@ -759,7 +764,7 @@ class App {
                 renderer.textures.bytes += texture->bytes;
                 renderer.textures.images[pending.key] = texture;
             } catch (...) {
-                record("贴图上传失败：" + pending.key + ": " + exceptionText());
+                record(edm::tr("贴图上传失败：") + pending.key + ": " + exceptionText());
             }
             lock.lock();
         }
@@ -788,8 +793,8 @@ class App {
                     return;
                 catalog = found;
                 scanning = false;
-                record("发现 " + std::to_string(found->liveries.size()) + " 个涂装，扫描 " +
-                       std::to_string(found->roots.size()) + " 个目录。");
+                record(edm::tr("发现 ") + std::to_string(found->liveries.size()) + edm::tr(" 个涂装，扫描 ") +
+                       std::to_string(found->roots.size()) + edm::tr(" 个目录。"));
                 for (auto& warning : found->warnings)
                     record(warning);
                 auto key = lower(pathString(currentPath));
@@ -815,7 +820,7 @@ class App {
         bortText.clear();
         applyInitialArguments();
         startAnalysis();
-        notice = livery ? "已应用涂装：" + livery->name : "已恢复模型默认贴图";
+        notice = livery ? edm::tr("已应用涂装：") + livery->name : edm::tr("已恢复模型默认贴图");
         settings["liveries"][lower(pathString(currentPath))] = livery ? livery->identifier() : "";
         saveSettings();
         startTextures();
@@ -840,8 +845,8 @@ class App {
                 analysis = std::move(result);
                 analyzing = false;
                 lastHighlight = -2;
-                record("动画部件分析完成：" + std::to_string(analysis->arguments.size()) + " 个参数，" +
-                       std::to_string(analysis->seconds) + " 秒。");
+                record(edm::tr("动画部件分析完成：") + std::to_string(analysis->arguments.size()) + edm::tr(" 个参数，") +
+                       std::to_string(analysis->seconds) + edm::tr(" 秒。"));
             });
     }
     const AnimationFinding* finding(int argument) const {
@@ -853,14 +858,14 @@ class App {
     void findingTooltip(const AnimationFinding& f) {
         ImGui::BeginTooltip();
         ImGui::PushTextWrapPos(460);
-        ImGui::Text("%s · 匹配 %.0f 分", f.label.c_str(), f.confidence * 100);
+        ImGui::Text(edm::tr("%s · 匹配 %.0f 分"), f.label.c_str(), f.confidence * 100);
         ImGui::TextWrapped("%s / %s", f.location.c_str(), f.motion.c_str());
-        ImGui::Text("受影响网格 %zu · 最大位移 %.3f m", f.meshes.size(), f.maximumDisplacement);
+        ImGui::Text(edm::tr("受影响网格 %zu · 最大位移 %.3f m"), f.meshes.size(), f.maximumDisplacement);
         for (auto& evidence : f.evidence)
             ImGui::TextWrapped("• %s", evidence.c_str());
         for (auto& candidate : f.candidates)
-            ImGui::Text("候选 %s：%.0f 分", candidate.label.c_str(), candidate.score * 100);
-        ImGui::TextDisabled("启发式评分不代表准确率，名称不是 DCS 官方标注。");
+            ImGui::Text(edm::tr("候选 %s：%.0f 分"), candidate.label.c_str(), candidate.score * 100);
+        ImGui::TextDisabled(edm::tr("启发式评分不代表准确率，名称不是 DCS 官方标注。"));
         ImGui::PopTextWrapPos();
         ImGui::EndTooltip();
     }
@@ -885,7 +890,7 @@ class App {
         launch(
             "livery",
             [path, entry, context](Progress, const std::atomic_bool*) {
-                return std::make_shared<Livery>(readLivery(path, entry, "手动选择", "", context));
+                return std::make_shared<Livery>(readLivery(path, entry, edm::tr("手动选择"), "", context));
             },
             [this, gen](std::shared_ptr<Livery> selected) {
                 if (gen == generation)
@@ -929,21 +934,21 @@ class App {
         }
     }
     void openDialogImpl() {
-        if (auto path = dialog(hwnd, false, false, L"打开 DCS EDM 模型"))
+        if (auto path = dialog(hwnd, false, false, edm::trw(L"打开 DCS EDM 模型")))
             openModel(*path);
     }
     bool staticExport() const { return exportCurrentPose || exportFormat == 2; }
     void exportDialogImpl() {
         if (!renderer.model || exporting)
             return;
-        require(!paint.busy(), "绘制任务尚未完成，请稍后导出");
+        require(!paint.busy(), edm::tr("绘制任务尚未完成，请稍后导出"));
         // Freeze every current argument before opening the modal save dialog. The worker owns
         // this copy even if playback or parameter editing continues after export starts.
         const Args capturedPose = args;
         const bool capturedStatic = staticExport();
         auto extension = exportExtensions[exportFormat];
         auto filename = currentPath.stem().wstring() + (capturedStatic ? L"_model." : L".") + extension;
-        auto path = dialog(hwnd, true, false, capturedStatic ? L"导出纯模型（当前姿态）" : L"导出模型与动画",
+        auto path = dialog(hwnd, true, false, capturedStatic ? edm::trw(L"导出纯模型（当前姿态）") : edm::trw(L"导出模型与动画"),
                            extension, filename.c_str());
         if (!path)
             return;
@@ -961,7 +966,7 @@ class App {
         if (staticObj || capturedStatic)
             options.arguments = std::vector<int>{};
         else if (exportMode == 1) {
-            require(selectedArg >= 0, "请先在左侧选择要导出的动画参数");
+            require(selectedArg >= 0, edm::tr("请先在左侧选择要导出的动画参数"));
             options.arguments = std::vector<int>{selectedArg};
         }
         // Changing OBJ to another format in the save dialog must not enable animation.
@@ -978,16 +983,16 @@ class App {
                     if (!options.textures)
                         break;
                     require(!*cancel, "Cancelled");
-                    progress("编码绘制材质 " + std::to_string(material));
+                    progress(edm::tr("编码绘制材质 ") + std::to_string(material));
                     options.diffuseOverrides[material] = image->pngBytes();
                 }
                 return exportScene(*scene, *path, options, progress, cancel);
             },
             [this, path](Json report) {
                 exporting = false;
-                notice = "导出完成：" + pathString(*path);
+                notice = edm::tr("导出完成：") + pathString(*path);
                 if (report.contains("description_lua"))
-                    notice += " · 涂装配置：" + report["description_lua"].get<std::string>();
+                    notice += edm::tr(" · 涂装配置：") + report["description_lua"].get<std::string>();
                 record(notice);
                 record(report.dump(2));
             });
@@ -1041,19 +1046,19 @@ class App {
     }
     void leftPanel(float height) {
         ImGui::BeginChild("Animation", {leftWidth, height}, ImGuiChildFlags_Borders);
-        title("动画控制", "按 DCS 参数独立预览");
+        title(edm::tr("动画控制"), edm::tr("按 DCS 参数独立预览"));
         if (!renderer.model) {
-            mutedText("载入模型后，动画参数将在这里显示。");
+            mutedText(edm::tr("载入模型后，动画参数将在这里显示。"));
             ImGui::EndChild();
             return;
         }
         auto& scene = *renderer.model->scene;
         ImGui::TextColored(accent, "%zu", scene.limits.size());
         ImGui::SameLine();
-        mutedText("个可用参数");
+        mutedText(edm::tr("个可用参数"));
         space();
         if (selectedArg >= 0) {
-            ImGui::Text("参数 %03d", selectedArg);
+            ImGui::Text(edm::tr("参数 %03d"), selectedArg);
             auto [lo, hi] = scene.limits.at(selectedArg);
             double value = argValue(args, selectedArg);
             ImGui::SetNextItemWidth(-1);
@@ -1071,41 +1076,43 @@ class App {
                 }
             }
             float half = (ImGui::GetContentRegionAvail().x - 9) / 2;
-            if (primary(playing ? "暂停" : "播放", {half, 36})) {
+            if (primary(playing ? edm::tr("暂停") : edm::tr("播放"), {half, 36})) {
                 playing = !playing;
                 playTime = (hi > lo) ? (argValue(args, selectedArg) - lo) / (hi - lo) * duration : 0;
             }
             ImGui::SameLine();
-            if (ImGui::Button("复位", {half, 36})) {
+            if (ImGui::Button(edm::tr("复位"), {half, 36})) {
                 args[selectedArg] = argValue(baseline, selectedArg);
                 playing = false;
                 poseDirty = true;
             }
             space(4);
-            ImGui::TextDisabled("范围  %.3f — %.3f", lo, hi);
+            ImGui::TextDisabled(edm::tr("范围  %.3f — %.3f"), lo, hi);
             if (ImGui::IsItemHovered() && argNames.contains(selectedArg))
                 ImGui::SetTooltip("%s", argNames[selectedArg].c_str());
             if (auto* f = finding(selectedArg)) {
-                ImGui::TextColored(accent, "%s · %.0f 分", f->label.c_str(), f->confidence * 100);
+                ImGui::TextColored(accent, edm::tr("%s · %.0f 分"), f->label.c_str(), f->confidence * 100);
                 if (ImGui::IsItemHovered())
                     findingTooltip(*f);
-                if (ImGui::Checkbox("高亮运动网格", &highlightMotion))
+                if (ImGui::Checkbox(edm::tr("高亮运动网格"), &highlightMotion))
                     lastHighlight = -2;
-                ImGui::SameLine();
+                if (ImGui::GetItemRectMax().x + ImGui::CalcTextSize(edm::tr("定位")).x + 40 <
+                    ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x)
+                    ImGui::SameLine();
                 ImGui::BeginDisabled(f->meshes.empty());
-                if (ImGui::SmallButton("定位")) {
+                if (ImGui::SmallButton(edm::tr("定位"))) {
                     renderer.camera.target = f->bounds.center();
                     renderer.camera.distance = std::max(.2, f->bounds.extent().norm() * 1.7);
                 }
                 ImGui::EndDisabled();
             } else if (analyzing)
-                mutedText("正在分析运动区域…");
+                mutedText(edm::tr("正在分析运动区域…"));
         }
         space();
         ImGui::Separator();
         space();
         ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextWithHint("##argsearch", "搜索部件、参数或节点", &argSearch);
+        ImGui::InputTextWithHint("##argsearch", edm::tr("搜索部件、参数或节点"), &argSearch);
         filteredArgs.clear();
         auto search = lower(argSearch);
         for (auto [a, r] : scene.limits)
@@ -1124,7 +1131,7 @@ class App {
                 char number[16];
                 std::snprintf(number, sizeof(number), "%03d", a);
                 auto* f = finding(a);
-                std::string label = std::string(number) + "   " + (f ? f->label : "待分析");
+                std::string label = std::string(number) + "   " + (f ? f->label : edm::tr("待分析"));
                 if (ImGui::Selectable(label.c_str(), a == selectedArg, 0, {0, 30})) {
                     selectedArg = a;
                     playing = false;
@@ -1138,7 +1145,7 @@ class App {
                 ImGui::PopID();
             }
         ImGui::EndChild();
-        if (ImGui::Button("全部恢复涂装默认值", {-1, 34})) {
+        if (ImGui::Button(edm::tr("全部恢复涂装默认值"), {-1, 34})) {
             args = baseline;
             poseDirty = true;
             playing = false;
@@ -1147,18 +1154,18 @@ class App {
     }
     void liveryPanel() {
         if (renderer.model && renderer.model->scene->collisionOnly()) {
-            title("碰撞模型", "壳体几何与参数动画");
-            mutedText("颜色用于区分碰撞壳体。\n该模型不含可绘制的涂装 UV，\n无需加载涂装或贴图。");
+            title(edm::tr("碰撞模型"), edm::tr("壳体几何与参数动画"));
+            mutedText(edm::tr("颜色用于区分碰撞壳体。\n该模型不含可绘制的涂装 UV，\n无需加载涂装或贴图。"));
             space();
-            mutedText("可在左侧调节动画参数，\n勾选下方“线框”查看结构，\n或导出为通用模型文件。");
+            mutedText(edm::tr("可在左侧调节动画参数，\n勾选下方“线框”查看结构，\n或导出为通用模型文件。"));
             return;
         }
-        title("外观与涂装", "自动发现本体与保存的游戏目录");
+        title(edm::tr("外观与涂装"), edm::tr("自动发现本体与保存的游戏目录"));
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::BeginCombo("##livery", livery ? livery->name.c_str() : "模型默认贴图")) {
+        if (ImGui::BeginCombo("##livery", livery ? livery->name.c_str() : edm::tr("模型默认贴图"))) {
             ImGui::SetNextItemWidth(-1);
-            ImGui::InputTextWithHint("##liverysearch", "搜索涂装", &liverySearch);
-            if (ImGui::Selectable("模型默认贴图", !livery))
+            ImGui::InputTextWithHint("##liverysearch", edm::tr("搜索涂装"), &liverySearch);
+            if (ImGui::Selectable(edm::tr("模型默认贴图"), !livery))
                 applyLivery(nullptr);
             if (catalog)
                 for (size_t i = 0; i < catalog->liveries.size(); i++) {
@@ -1182,10 +1189,10 @@ class App {
         }
         space(3);
         if (scanning)
-            mutedText("正在扫描涂装目录…");
+            mutedText(edm::tr("正在扫描涂装目录…"));
         else if (catalog)
-            mutedText("发现 " + std::to_string(catalog->liveries.size()) + " 个涂装 · " +
-                      std::to_string(catalog->installs.size()) + " 处 DCS 安装");
+            mutedText(edm::tr("发现 ") + std::to_string(catalog->liveries.size()) + edm::tr(" 个涂装 · ") +
+                      std::to_string(catalog->installs.size()) + edm::tr(" 处 DCS 安装"));
         if (livery) {
             space();
             ImGui::TextWrapped("%s", livery->name.c_str());
@@ -1193,25 +1200,25 @@ class App {
         }
         space();
         float half = (ImGui::GetContentRegionAvail().x - 9) / 2;
-        if (ImGui::Button("导入涂装", {half, 36})) {
-            if (auto p = dialog(hwnd, false, false, L"导入涂装 description.lua 或 ZIP", L"lua"))
+        if (ImGui::Button(edm::tr("导入涂装"), {half, 36})) {
+            if (auto p = dialog(hwnd, false, false, edm::trw(L"导入涂装 description.lua 或 ZIP"), L"lua"))
                 importLivery(*p);
         }
         ImGui::SameLine();
-        if (ImGui::Button("重新扫描", {half, 36}))
+        if (ImGui::Button(edm::tr("重新扫描"), {half, 36}))
             scan();
-        if (ImGui::Button("管理扫描目录", {-1, 36}))
+        if (ImGui::Button(edm::tr("管理扫描目录"), {-1, 36}))
             openRoots = true;
         space(12);
         ImGui::Separator();
         space(12);
-        title("机身编号");
+        title(edm::tr("机身编号"));
         auto mapping = renderer.model ? bortMapping(*renderer.model->scene) : std::vector<int>{};
         ImGui::BeginDisabled(mapping.empty());
         ImGui::SetNextItemWidth(std::max(80.f, ImGui::GetContentRegionAvail().x - 70));
-        ImGui::InputTextWithHint("##bort", "例如 408", &bortText, ImGuiInputTextFlags_CharsDecimal);
+        ImGui::InputTextWithHint("##bort", edm::tr("例如 408"), &bortText, ImGuiInputTextFlags_CharsDecimal);
         ImGui::SameLine();
-        if (primary("应用", {60, 0})) {
+        if (primary(edm::tr("应用"), {60, 0})) {
             try {
                 for (auto [a, v] : bortArguments(*renderer.model->scene, bortText))
                     args[a] = v;
@@ -1222,141 +1229,141 @@ class App {
             }
         }
         ImGui::EndDisabled();
-        mutedText(mapping.empty() ? "此模型没有识别到快捷编号布局，可在参数列表中调整。"
-                                  : "编号与涂装一起预览，并保留在导出文件中。");
+        mutedText(mapping.empty() ? edm::tr("此模型没有识别到快捷编号布局，可在参数列表中调整。")
+                                  : edm::tr("编号与涂装一起预览，并保留在导出文件中。"));
         space(14);
         ImGui::Separator();
         space(12);
-        title("动态 Lua 配置");
-        mutedText("支持变量、条件、函数、循环及涂装目录中的 Lua 引用。");
-        if (ImGui::Button("配置变量 / 重新求值", {-1, 36})) {
+        title(edm::tr("动态 Lua 配置"));
+        mutedText(edm::tr("支持变量、条件、函数、循环及涂装目录中的 Lua 引用。"));
+        if (ImGui::Button(edm::tr("配置变量 / 重新求值"), {-1, 36})) {
             contextText = luaContext.dump(2);
             openContext = true;
         }
         if (livery && livery->evaluation.contains("includes"))
-            mutedText("Lua 5.4 · " + std::to_string(livery->evaluation["includes"].size()) + " 个引用文件");
+            mutedText("Lua 5.4 · " + std::to_string(livery->evaluation["includes"].size()) + edm::tr(" 个引用文件"));
         space(12);
         ImGui::Separator();
         space(12);
-        title("贴图质量");
-        const char* quality[]{"节省显存 · 1024", "均衡 · 2048", "清晰 · 4096", "原画细节 · 8192"};
+        title(edm::tr("贴图质量"));
+        const char* quality[]{edm::tr("节省显存 · 1024"), edm::tr("均衡 · 2048"), edm::tr("清晰 · 4096"), edm::tr("原画细节 · 8192")};
         ImGui::SetNextItemWidth(-1);
         if (ImGui::Combo("##quality", &textureQuality, quality, 4)) {
             saveSettings();
             startTextures();
         }
         space(4);
-        mutedText("预览贴图预算（GB）");
+        mutedText(edm::tr("预览贴图预算（GB）"));
         ImGui::SetNextItemWidth(-1);
         const bool submitBudget = ImGui::InputDouble("##texture-budget", &textureBudgetInputGB, .25, 1,
                                                      "%.2f", ImGuiInputTextFlags_EnterReturnsTrue);
-        const bool applyBudget = ImGui::Button("应用贴图预算", {-1, 32});
+        const bool applyBudget = ImGui::Button(edm::tr("应用贴图预算"), {-1, 32});
         if (submitBudget || applyBudget)
             applyTextureBudget();
-        ImGui::TextDisabled("当前 %.2f GB · 默认 2 GB", textureBudgetGB);
-        mutedText("可输入 0.25–100 GB，回车或点击应用。\n预算是加载上限，按实际贴图占用；导出不受此限制。");
+        ImGui::TextDisabled(edm::tr("当前 %.2f GB · 默认 2 GB"), textureBudgetGB);
+        mutedText(edm::tr("可输入 0.25–100 GB，回车或点击应用。\n预算是加载上限，按实际贴图占用；导出不受此限制。"));
     }
     void exportPanel() {
-        title("通用模型导出", "GLB · glTF · OBJ · FBX");
-        const char* formats[]{"GLB · 单文件", "glTF · 嵌入式", "OBJ · 静态模型", "FBX · 通用模型"};
-        mutedText("文件格式");
+        title(edm::tr("通用模型导出"), "GLB · glTF · OBJ · FBX");
+        const char* formats[]{edm::tr("GLB · 单文件"), edm::tr("glTF · 嵌入式"), edm::tr("OBJ · 静态模型"), edm::tr("FBX · 通用模型")};
+        mutedText(edm::tr("文件格式"));
         ImGui::SetNextItemWidth(-1);
         if (ImGui::Combo("##exportformat", &exportFormat, formats, 4))
             saveSettings();
         const bool staticObj = exportFormat == 2;
         bool currentPose = staticExport();
         ImGui::BeginDisabled(staticObj);
-        if (ImGui::Checkbox("只导出模型（纯网格）", &currentPose)) {
+        if (ImGui::Checkbox(edm::tr("只导出模型（纯网格）"), &currentPose)) {
             exportCurrentPose = currentPose;
             saveSettings();
         }
         ImGui::EndDisabled();
         if (currentPose)
-            mutedText("固定当前姿态，只保留网格和材质。\n去除骨架、动画、挂点及辅助节点。\n贴图按下方选项导出，不附加 Lua 或报告。");
-        const char* modes[]{"全部参数动画", "仅当前参数动画"};
+            mutedText(edm::tr("固定当前姿态，只保留网格和材质。\n去除骨架、动画、挂点及辅助节点。\n贴图按下方选项导出，不附加 Lua 或报告。"));
+        const char* modes[]{edm::tr("全部参数动画"), edm::tr("仅当前参数动画")};
         ImGui::BeginDisabled(currentPose);
         ImGui::SetNextItemWidth(-1);
         if (ImGui::Combo("##exportmode", &exportMode, modes, 2))
             saveSettings();
         space();
-        mutedText("每个动画片段的时长");
+        mutedText(edm::tr("每个动画片段的时长"));
         ImGui::SetNextItemWidth(-1);
-        if (ImGui::InputFloat("##duration", &duration, .5f, 1.f, "%.1f 秒"))
+        if (ImGui::InputFloat("##duration", &duration, .5f, 1.f, edm::tr("%.1f 秒")))
             duration = std::clamp(duration, .1f, 120.f);
         ImGui::EndDisabled();
         const bool collision = renderer.model && renderer.model->scene->collisionOnly();
         if (collision)
-            mutedText("碰撞壳体按几何与参数动画导出，\n不附加涂装贴图。");
+            mutedText(edm::tr("碰撞壳体按几何与参数动画导出，\n不附加涂装贴图。"));
         else
-            ImGui::Checkbox("导出贴图与当前涂装", &exportTextures);
+            ImGui::Checkbox(edm::tr("导出贴图与当前涂装"), &exportTextures);
         space(12);
         ImGui::BeginDisabled(!renderer.model || exporting);
-        if (primary(exporting ? "正在导出…" : currentPose ? "导出纯模型" : "导出模型与动画", {-1, 44}))
+        if (primary(exporting ? edm::tr("正在导出…") : currentPose ? edm::tr("导出纯模型") : edm::tr("导出模型与动画"), {-1, 44}))
             exportDialog();
         ImGui::EndDisabled();
-        if (exporting && ImGui::Button("取消导出", {-1, 34})) {
+        if (exporting && ImGui::Button(edm::tr("取消导出"), {-1, 34})) {
             cancelKind("export");
-            notice = "正在停止导出…";
+            notice = edm::tr("正在停止导出…");
         }
         space(8);
-        if (!collision && ImGui::Button("指定额外贴图目录", {-1, 36})) {
-            if (auto p = dialog(hwnd, false, true, L"选择贴图目录")) {
+        if (!collision && ImGui::Button(edm::tr("指定额外贴图目录"), {-1, 36})) {
+            if (auto p = dialog(hwnd, false, true, edm::trw(L"选择贴图目录"))) {
                 textureDir = *p;
                 saveSettings();
                 startTextures();
             }
         }
         if (!collision)
-            mutedText(textureDir.empty() ? "使用模型、模块和涂装目录自动匹配。" : pathString(textureDir));
+            mutedText(textureDir.empty() ? edm::tr("使用模型、模块和涂装目录自动匹配。") : pathString(textureDir));
         space(12);
         ImGui::Separator();
         space(12);
         if (staticObj) {
             mutedText(
-                "保存当前姿态与编号。\nOBJ 不包含动画或骨骼。\n移动文件时，请同时携带 MTL\n和贴图文件夹。");
+                edm::tr("保存当前姿态与编号。\nOBJ 不包含动画或骨骼。\n移动文件时，请同时携带 MTL\n和贴图文件夹。"));
         } else if (currentPose) {
-            mutedText("当前变形已烘焙到顶点，保留分件与编号。\n在 Blender 中导入后只有网格物体。");
+            mutedText(edm::tr("当前变形已烘焙到顶点，保留分件与编号。\n在 Blender 中导入后只有网格物体。"));
         } else {
-            mutedText("按原始范围导出参数动画。\n每段动画将其他参数固定在\n导出时的当前姿态。");
+            mutedText(edm::tr("按原始范围导出参数动画。\n每段动画将其他参数固定在\n导出时的当前姿态。"));
             space();
-            mutedText("保留蒙皮与可见性。\n动态编号转为离散动画。\n各软件对材质的显示可能不同。");
+            mutedText(edm::tr("保留蒙皮与可见性。\n动态编号转为离散动画。\n各软件对材质的显示可能不同。"));
         }
         if (exportFormat == 3 && !collision) {
             space();
-            mutedText("FBX 嵌入颜色与透明贴图。\nRoughMet 作为资源保留，\n导入后可能需要手动连接。");
+            mutedText(edm::tr("FBX 嵌入颜色与透明贴图。\nRoughMet 作为资源保留，\n导入后可能需要手动连接。"));
         }
     }
     void infoPanel() {
-        title("模型信息");
+        title(edm::tr("模型信息"));
         if (renderer.model) {
             auto& s = *renderer.model->scene;
             auto stats = s.summary();
             ImGui::TextWrapped("%s", pathString(currentPath.filename()).c_str());
             if (s.collisionOnly()) {
                 space();
-                ImGui::TextColored(accent, "碰撞模型");
-                mutedText("保留壳体结构与父节点动画。\n颜色仅用于区分壳体，无涂装 UV。");
+                ImGui::TextColored(accent, edm::tr("碰撞模型"));
+                mutedText(edm::tr("保留壳体结构与父节点动画。\n颜色仅用于区分壳体，无涂装 UV。"));
             }
             space();
             for (auto [label, key] :
-                 std::vector<std::pair<const char*, const char*>>{{"网格", "export_meshes"},
-                                                                  {"三角形", "triangles"},
-                                                                  {"材质", "materials"},
-                                                                  {"蒙皮网格", "skinned_meshes"},
-                                                                  {"连接点", "connectors"}}) {
+                 std::vector<std::pair<const char*, const char*>>{{edm::tr("网格"), "export_meshes"},
+                                                                  {edm::tr("三角形"), "triangles"},
+                                                                  {edm::tr("材质"), "materials"},
+                                                                  {edm::tr("蒙皮网格"), "skinned_meshes"},
+                                                                  {edm::tr("连接点"), "connectors"}}) {
                 mutedText(label);
                 ImGui::SameLine(130);
                 ImGui::TextUnformatted(compactNumber(stats[key].get<size_t>()).c_str());
             }
             if (s.collisionCount) {
-                mutedText("碰撞壳体");
+                mutedText(edm::tr("碰撞壳体"));
                 ImGui::SameLine(130);
                 ImGui::Text("%d", s.collisionCount);
             }
             space();
-            ImGui::Text("模型准备  %.2f 秒", loadSeconds);
-            ImGui::Text("贴图显存  %.1f MB", renderer.textures.bytes / 1048576.);
-            ImGui::Text("贴图数量  %zu", renderer.textures.images.size());
+            ImGui::Text(edm::tr("模型准备  %.2f 秒"), loadSeconds);
+            ImGui::Text(edm::tr("贴图显存  %.1f MB"), renderer.textures.bytes / 1048576.);
+            ImGui::Text(edm::tr("贴图数量  %zu"), renderer.textures.images.size());
             mutedText(renderer.adapterName);
             space();
             for (auto& warning : s.warnings)
@@ -1364,31 +1371,31 @@ class App {
             for (auto& warning : renderer.textures.warnings)
                 mutedText(warning);
             if (!renderer.textures.missing.empty())
-                mutedText(std::to_string(renderer.textures.missing.size()) + " 项贴图未找到");
+                mutedText(std::to_string(renderer.textures.missing.size()) + edm::tr(" 项贴图未找到"));
         }
         space();
-        if (ImGui::CollapsingHeader("读取与导出日志")) {
+        if (ImGui::CollapsingHeader(edm::tr("读取与导出日志"))) {
             ImGui::InputTextMultiline("##logs", &log, {-1, 260}, ImGuiInputTextFlags_ReadOnly);
         }
     }
     void rightPanel(float height) {
         ImGui::BeginChild("Properties", {rightWidth, height}, ImGuiChildFlags_Borders);
-        if (ImGui::BeginTabBar("##properties")) {
-            if (ImGui::BeginTabItem("涂装", nullptr, rightTab == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (ImGui::BeginTabBar("##properties", ImGuiTabBarFlags_FittingPolicyResizeDown)) {
+            if (ImGui::BeginTabItem(edm::tr("涂装"), nullptr, rightTab == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
                 liveryPanel();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("绘制", nullptr, rightTab == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (ImGui::BeginTabItem(edm::tr("绘制"), nullptr, rightTab == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
                 ImGui::BeginDisabled(attaching);
                 paint.panel(hwnd, renderer, args);
                 ImGui::EndDisabled();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("导出", nullptr, rightTab == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (ImGui::BeginTabItem(edm::tr("导出"), nullptr, rightTab == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
                 exportPanel();
                 ImGui::EndTabItem();
             }
-            if (ImGui::BeginTabItem("信息", nullptr, rightTab == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            if (ImGui::BeginTabItem(edm::tr("信息"), nullptr, rightTab == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
                 infoPanel();
                 ImGui::EndTabItem();
             }
@@ -1406,21 +1413,21 @@ class App {
     }
     void modals() {
         if (openContext) {
-            ImGui::OpenPopup("Lua 配置变量");
+            ImGui::OpenPopup(edm::tr("Lua 配置变量"));
             openContext = false;
         }
         ImGui::SetNextWindowSize({640, 510}, ImGuiCond_Appearing);
-        if (ImGui::BeginPopupModal("Lua 配置变量", nullptr, ImGuiWindowFlags_NoResize)) {
-            mutedText("输入 JSON 对象，例如 {\"variant\": \"navy\", \"number\": "
-                      "408}。变量可直接访问，也可通过 EDM_STUDIO 访问。");
+        if (ImGui::BeginPopupModal(edm::tr("Lua 配置变量"), nullptr, ImGuiWindowFlags_NoResize)) {
+            mutedText(edm::tr("输入 JSON 对象，例如 {\"variant\": \"navy\", \"number\": "
+                      "408}。变量可直接访问，也可通过 EDM_STUDIO 访问。"));
             space();
             ImGui::InputTextMultiline("##context", &contextText, {-1, 300},
                                       ImGuiInputTextFlags_AllowTabInput);
             space();
-            if (primary("应用并重新求值", {180, 38})) {
+            if (primary(edm::tr("应用并重新求值"), {180, 38})) {
                 try {
                     auto context = Json::parse(contextText);
-                    require(context.is_object(), "Lua 变量必须为 JSON 对象");
+                    require(context.is_object(), edm::tr("Lua 变量必须为 JSON 对象"));
                     luaContext = context;
                     if (livery)
                         selectLivery(livery->path, livery->entry);
@@ -1430,21 +1437,21 @@ class App {
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button("取消", {90, 38}))
+            if (ImGui::Button(edm::tr("取消"), {90, 38}))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
         if (openRoots) {
-            ImGui::OpenPopup("扫描目录");
+            ImGui::OpenPopup(edm::tr("扫描目录"));
             openRoots = false;
         }
         ImGui::SetNextWindowSize({700, 500}, ImGuiCond_Appearing);
-        if (ImGui::BeginPopupModal("扫描目录", nullptr, ImGuiWindowFlags_NoResize)) {
+        if (ImGui::BeginPopupModal(edm::tr("扫描目录"), nullptr, ImGuiWindowFlags_NoResize)) {
             mutedText(
-                "自动检测 Windows“保存的游戏”、DCS 配置、Steam 库及 DCS 安装目录。这里可以补充自定义位置。");
+                edm::tr("自动检测 Windows“保存的游戏”、DCS 配置、Steam 库及 DCS 安装目录。这里可以补充自定义位置。"));
             space();
-            if (ImGui::Button("添加目录…", {140, 36})) {
-                if (auto p = dialog(hwnd, false, true, L"添加涂装 / DCS / 保存的游戏目录")) {
+            if (ImGui::Button(edm::tr("添加目录…"), {140, 36})) {
+                if (auto p = dialog(hwnd, false, true, edm::trw(L"添加涂装 / DCS / 保存的游戏目录"))) {
                     extraRoots.push_back(*p);
                     extraRoots = uniquePaths(extraRoots);
                     saveSettings();
@@ -1454,7 +1461,7 @@ class App {
             ImGui::BeginChild("Roots", {0, 310});
             for (size_t i = 0; i < extraRoots.size(); i++) {
                 ImGui::PushID(int(i));
-                if (ImGui::SmallButton("移除")) {
+                if (ImGui::SmallButton(edm::tr("移除"))) {
                     extraRoots.erase(extraRoots.begin() + i);
                     saveSettings();
                     scan();
@@ -1466,26 +1473,26 @@ class App {
                 ImGui::PopID();
             }
             space();
-            mutedText("自动检测的涂装目录");
+            mutedText(edm::tr("自动检测的涂装目录"));
             if (catalog)
                 for (auto& root : catalog->roots)
                     ImGui::TextWrapped("%s", pathString(root).c_str());
             ImGui::EndChild();
-            if (primary("完成", {110, 36}))
+            if (primary(edm::tr("完成"), {110, 36}))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
         if (openImport) {
-            ImGui::OpenPopup("选择 ZIP 内的涂装");
+            ImGui::OpenPopup(edm::tr("选择 ZIP 内的涂装"));
             openImport = false;
         }
-        if (ImGui::BeginPopupModal("选择 ZIP 内的涂装", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::BeginPopupModal(edm::tr("选择 ZIP 内的涂装"), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             for (auto& entry : importEntries)
                 if (ImGui::Selectable(entry.c_str())) {
                     selectLivery(importPath, entry);
                     ImGui::CloseCurrentPopup();
                 }
-            if (ImGui::Button("取消"))
+            if (ImGui::Button(edm::tr("取消")))
                 ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
@@ -1510,17 +1517,33 @@ class App {
         ImGui::PopFont();
         ImGui::SameLine();
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 7);
-        ImGui::TextColored(muted, "NATIVE  /  DCS 模型与动画");
-        ImGui::SameLine(io.DisplaySize.x - 363);
-        if (ImGui::Button("打开 EDM", {130, 42}))
+        if (io.DisplaySize.x >= 1260) {
+            ImGui::TextColored(muted, edm::tr("NATIVE  /  DCS 模型与动画"));
+            ImGui::SameLine(io.DisplaySize.x - 550);
+        } else
+            ImGui::SetCursorPosX(io.DisplaySize.x - 550);
+        ImGui::SetNextItemWidth(155);
+        const int previousLanguage = nextLanguage;
+        if (ImGui::Combo("##language", &nextLanguage, "简体中文\0English\0") && !saveSettings()) {
+            nextLanguage = previousLanguage;
+            error = edm::tr("无法保存语言设置。请确认程序所在文件夹可写。选择未保存。");
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Language / 简体中文 · English");
+        ImGui::SameLine(io.DisplaySize.x - 375);
+        if (ImGui::Button(edm::tr("打开 EDM"), {130, 42}))
             openDialog();
         ImGui::SameLine();
         ImGui::BeginDisabled(!renderer.model || exporting);
-        if (primary(staticExport() ? "导出纯模型" : "导出模型与动画", {182, 42}))
+        if (primary(staticExport() ? edm::tr("导出纯模型") : edm::tr("导出模型与动画"), {194, 42}))
             exportDialog();
         ImGui::EndDisabled();
+        if (nextLanguage != (language() == Language::English ? 1 : 0))
+            mutedText(edm::tr("语言已保存，重启后生效。请先保存绘制工程。"));
+        if (!languagePackWarning().empty())
+            mutedText(languagePackWarning());
         space(6);
-        mutedText(currentPath.empty() ? "模型工作台  /  支持 EDM 8 与 EDM 10" : pathString(currentPath));
+        mutedText(currentPath.empty() ? edm::tr("模型工作台  /  支持 EDM 8 与 EDM 10") : pathString(currentPath));
         space(7);
         float height = std::max(200.f, ImGui::GetContentRegionAvail().y - 37);
         float side = showPanels ? leftWidth + rightWidth + 32 : 0;
@@ -1544,9 +1567,9 @@ class App {
             ImGui::Text("%s", pathString(currentPath.stem()).c_str());
         ImGui::SameLine(std::max(200.f, ImGui::GetWindowWidth() - 152));
         ImGui::TextColored(green, "●  %s",
-                           loading                         ? "载入中"
-                           : renderer.options.editedLivery ? "实时预览"
-                                                           : "未编辑涂装");
+                           loading                         ? edm::tr("载入中")
+                           : renderer.options.editedLivery ? edm::tr("实时预览")
+                                                           : edm::tr("未编辑涂装"));
         space(4);
         ImVec2 size = ImGui::GetContentRegionAvail();
         const bool narrowControls = ImGui::GetContentRegionAvail().x < 610;
@@ -1583,11 +1606,11 @@ class App {
             overlay->AddCircle(center, 42, IM_COL32(76, 128, 202, 100), 64, 2);
             overlay->AddTriangle({center.x - 19, center.y + 13}, {center.x, center.y - 21},
                                  {center.x + 19, center.y + 13}, IM_COL32(126, 176, 244, 220), 2);
-            std::string text = loading ? "正在准备模型…" : "将 EDM 文件拖入此处";
+            std::string text = loading ? edm::tr("正在准备模型…") : edm::tr("将 EDM 文件拖入此处");
             auto extent = ImGui::CalcTextSize(text.c_str());
             overlay->AddText({center.x - extent.x / 2, center.y + 68}, IM_COL32(193, 211, 236, 255),
                              text.c_str());
-            std::string hint = "或点击右上角「打开 EDM」";
+            std::string hint = edm::tr("或点击右上角「打开 EDM」");
             extent = ImGui::CalcTextSize(hint.c_str());
             overlay->AddText({center.x - extent.x / 2, center.y + 99}, IM_COL32(111, 135, 165, 255),
                              hint.c_str());
@@ -1598,61 +1621,69 @@ class App {
                              [](const auto& mesh) { return !mesh.lodActive; });
             std::snprintf(stats, sizeof(stats), "%s triangles  ·  %zu meshes%s",
                           compactNumber(renderer.visibleTriangles).c_str(),
-                          size_t(renderer.drawCalls), hasLods ? "  ·  最高精度 LOD" : "");
-            overlay->AddText({origin.x + 16, origin.y + 14}, IM_COL32(151, 178, 211, 230), stats);
+                          size_t(renderer.drawCalls), hasLods ? edm::tr("  ·  最高精度 LOD") : "");
+            const float overlayWidth = std::max(1.f, size.x - 32);
+            overlay->AddText(nullptr, 0, {origin.x + 16, origin.y + 14},
+                             IM_COL32(151, 178, 211, 230), stats, nullptr, overlayWidth);
             if (renderer.model->scene->collisionOnly())
                 overlay->AddText({origin.x + 16, origin.y + 36}, IM_COL32(111, 192, 224, 235),
-                                 "碰撞壳体 · 可查看参数动画与导出几何");
-            std::string help = renderer.options.connectors ? "点击空挂点加载 EDM · 点击黄色挂点显示卸载按钮"
+                                 edm::tr("碰撞壳体 · 可查看参数动画与导出几何"));
+            std::string help = renderer.options.connectors ? edm::tr("点击空挂点加载 EDM · 点击黄色挂点显示卸载按钮")
                                : paint.active() && renderer.options.editedLivery
-                                   ? "按位置自动绘制 · 右键旋转 · 中键平移"
-                                   : "左 / 右键旋转  ·  中键平移  ·  滚轮缩放";
-            overlay->AddText({origin.x + 16, origin.y + size.y - 30}, IM_COL32(111, 139, 173, 220),
-                             help.c_str());
+                                   ? edm::tr("按位置自动绘制 · 右键旋转 · 中键平移")
+                                   : edm::tr("左 / 右键旋转  ·  中键平移  ·  滚轮缩放");
+            const float helpHeight = ImGui::CalcTextSize(help.c_str(), nullptr, false, overlayWidth).y;
+            overlay->AddText(nullptr, 0, {origin.x + 16, origin.y + size.y - helpHeight - 12},
+                             IM_COL32(111, 139, 173, 220), help.c_str(), nullptr, overlayWidth);
         }
         space(3);
-        if (ImGui::Button("适应视图", {96, 32}))
+        if (ImGui::Button(edm::tr("适应视图"), {96, 32}))
             fit();
         ImGui::SameLine();
-        ImGui::Checkbox("贴图", &renderer.options.textures);
-        ImGui::SameLine();
-        ImGui::Checkbox("RoughMet", &renderer.options.roughmet);
+        ImGui::Checkbox(edm::tr("贴图"), &renderer.options.textures);
+        const bool compactView = size.x < 460;
+        if (!compactView) {
+            ImGui::SameLine();
+            ImGui::Checkbox("RoughMet", &renderer.options.roughmet);
+        }
         if (ImGui::GetWindowWidth() > 600) {
             ImGui::SameLine();
-            ImGui::Checkbox("线框", &renderer.options.wireframe);
+            ImGui::Checkbox(edm::tr("线框"), &renderer.options.wireframe);
             ImGui::SameLine();
-            ImGui::Checkbox("网格", &renderer.options.grid);
+            ImGui::Checkbox(edm::tr("网格##ground-grid"), &renderer.options.grid);
         } else {
             ImGui::SameLine();
-            if (ImGui::Button("更多"))
-                ImGui::OpenPopup("视图选项");
-            if (ImGui::BeginPopup("视图选项")) {
-                ImGui::Checkbox("线框", &renderer.options.wireframe);
-                ImGui::Checkbox("网格", &renderer.options.grid);
+            if (ImGui::Button(edm::tr("更多")))
+                ImGui::OpenPopup(edm::tr("视图选项"));
+            if (ImGui::BeginPopup(edm::tr("视图选项"))) {
+                if (compactView)
+                    ImGui::Checkbox("RoughMet", &renderer.options.roughmet);
+                ImGui::Checkbox(edm::tr("线框"), &renderer.options.wireframe);
+                ImGui::Checkbox(edm::tr("网格##ground-grid"), &renderer.options.grid);
                 ImGui::EndPopup();
             }
         }
         space(2);
-        ImGui::Checkbox("浏览已编辑的涂装", &renderer.options.editedLivery);
+        ImGui::Checkbox(edm::tr("浏览已编辑的涂装"), &renderer.options.editedLivery);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(
-                "取消勾选显示编辑前的涂装；编辑和撤销记录保留。\n保存与导出始终包含已编辑的内容。");
+                edm::tr("取消勾选显示编辑前的涂装；编辑和撤销记录保留。\n保存与导出始终包含已编辑的内容。"));
         if (!narrowControls)
             ImGui::SameLine(0, 20);
-        ImGui::Checkbox("显示挂点", &renderer.options.connectors);
+        ImGui::Checkbox(edm::tr("显示挂点"), &renderer.options.connectors);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("蓝色为 Pylon / Point；橙色表示已有外挂。\n点击圆点加载 "
-                              "EDM。标记可透过模型查看，绘制时可关闭。");
+            ImGui::SetTooltip(edm::tr("蓝色为 Pylon / Point；橙色表示已有外挂。\n点击圆点加载 "
+                              "EDM。标记可透过模型查看，绘制时可关闭。"));
         ImGui::SameLine(0, 20);
         ImGui::BeginDisabled(attaching || paint.busy());
-        if (ImGui::Checkbox("显示外挂物体", &renderer.options.attachments)) {
+        if (ImGui::Checkbox(edm::tr("显示外挂物体"), &renderer.options.attachments)) {
             paint.invalidateSurface(renderer);
             poseDirty = true;
         }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip(
-                "隐藏后，外挂不参与画笔拾取和图片投影遮挡。\n绘制记录保留；模型导出仍包含所有已连接的外挂。");
+                edm::tr("隐藏后，外挂不参与画笔拾取和图片投影遮挡。\n绘制记录保留；模型导出仍包含所有已连接的外挂。"));
         ImGui::EndChild();
         if (showPanels) {
             ImGui::SameLine(0, 5);
@@ -1672,18 +1703,18 @@ class App {
         ImGui::TextColored(muted, "%s", status.c_str());
         if (io.DisplaySize.x > 1100) {
             ImGui::SameLine(io.DisplaySize.x - 305);
-            ImGui::TextColored(muted, "%.0f FPS  ·  %.1f MB  ·  F11 聚焦", io.Framerate,
+            ImGui::TextColored(muted, edm::tr("%.0f FPS  ·  %.1f MB  ·  F11 聚焦"), io.Framerate,
                                renderer.textures.bytes / 1048576.);
         }
         modals();
         if (!error.empty()) {
-            ImGui::OpenPopup("操作未完成");
+            ImGui::OpenPopup(edm::tr("操作未完成"));
         }
         ImGui::SetNextWindowSize({620, 0}, ImGuiCond_Appearing);
-        if (ImGui::BeginPopupModal("操作未完成", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::BeginPopupModal(edm::tr("操作未完成"), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::TextWrapped("%s", error.c_str());
             space();
-            if (primary("知道了", {120, 36})) {
+            if (primary(edm::tr("知道了"), {120, 36})) {
                 error.clear();
                 ImGui::CloseCurrentPopup();
             }
@@ -1893,6 +1924,10 @@ class App {
               }()},
              {"preview_max_dimension", 1024 << textureQuality},
              {"preview_texture_budget_gb", textureBudgetGB},
+             {"language", languageCode(language())},
+             {"pending_language", languageCode(nextLanguage ? Language::English : Language::Chinese)},
+             {"translation_count", translationCount()},
+             {"language_pack_warning", languagePackWarning()},
              {"preview_texture_budget_bytes", size_t(textureBudgetGB * (1024ull * 1024 * 1024))},
              {"viewport", renderer.viewportMetrics()},
              {"animation_analysis", analysis ? analysis->toJson() : Json()},
@@ -1960,6 +1995,7 @@ LRESULT CALLBACK windowProc(HWND hwnd, UINT msg, WPARAM w, LPARAM l) {
 }
 } // namespace
 int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
+    configureLanguage(argc, argv);
     if (argc >= 4 && std::wstring_view(argv[1]) == L"--lua-worker")
         return luaWorker(argv[2], argv[3]);
     ComRuntime imageRuntime;
@@ -1978,6 +2014,8 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
         };
         if (key == L"--smoke")
             app.smoke = true;
+        else if (key == L"--language")
+            value(); // Applied before constructing App and starting any workers.
         else if (key == L"--attach") {
             auto spec = utf8(value());
             auto equals = spec.find('=');
@@ -2171,7 +2209,7 @@ int runApp(HINSTANCE instance, int argc, wchar_t** argv) {
                                                GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON),
                                                LR_SHARED));
     RegisterClassExW(&wc);
-    const auto windowTitle = wide(std::string("EDM Studio ") + EDM_NATIVE_VERSION + " — 模型、涂装与动画");
+    const auto windowTitle = wide(std::string("EDM Studio ") + EDM_NATIVE_VERSION + edm::tr(" — 模型、涂装与动画"));
     HWND hwnd = CreateWindowW(wc.lpszClassName, windowTitle.c_str(), WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                               CW_USEDEFAULT, windowWidth, windowHeight, nullptr, nullptr, instance, nullptr);
     require(hwnd, "Cannot create application window");
@@ -2300,7 +2338,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int) {
             }
         } else {
             auto message = edm::wide(text);
-            MessageBoxW(nullptr, message.c_str(), L"EDM Studio — 启动失败", MB_OK | MB_ICONERROR);
+            MessageBoxW(nullptr, message.c_str(), edm::trw(L"EDM Studio — 启动失败"), MB_OK | MB_ICONERROR);
         }
         LocalFree(argv);
         return 1;

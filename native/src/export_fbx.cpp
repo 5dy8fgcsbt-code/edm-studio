@@ -1068,7 +1068,7 @@ struct Encoder {
             for (auto& ch : animation.at("channels"))
                 channel(layer, ch, animation.at("samplers").at(ch.at("sampler").get<size_t>()));
             if (progress)
-                progress("FBX 动画 " + name);
+                progress(edm::tr("FBX 动画 ") + name);
         }
     }
     void finish() {

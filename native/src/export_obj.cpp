@@ -437,9 +437,9 @@ Json exportObjScene(const Scene& scene, const fs::path& path, const ExportOption
         numberMeshes += number;
         ++meshes;
         if (progress)
-            progress("导出 OBJ 网格 " + std::to_string(mi + 1) + " / " + std::to_string(scene.meshes.size()));
+            progress(edm::tr("导出 OBJ 网格 ") + std::to_string(mi + 1) + " / " + std::to_string(scene.meshes.size()));
     }
-    require(meshes > 0, "OBJ: 当前姿态没有可见的三角网格");
+    require(meshes > 0, edm::tr("OBJ: 当前姿态没有可见的三角网格"));
     obj.close();
     mtl.close();
     require(!obj.fail() && !mtl.fail(), "Cannot finish OBJ/MTL output");
@@ -448,8 +448,8 @@ Json exportObjScene(const Scene& scene, const fs::path& path, const ExportOption
         args[std::to_string(arg)] = value;
     auto warnings = scene.warnings;
     warnings.push_back(
-        "OBJ 不支持动画或骨骼；仅导出当前参数对应的静态姿态。需要动画请使用 FBX 或 GLB/glTF。");
-    warnings.push_back("OBJ/MTL 仅保留漫反射与透明度；RoughMet、双面设置和 DCS 专用着色器无法完整映射。");
+        edm::tr("OBJ 不支持动画或骨骼；仅导出当前参数对应的静态姿态。需要动画请使用 FBX 或 GLB/glTF。"));
+    warnings.push_back(edm::tr("OBJ/MTL 仅保留漫反射与透明度；RoughMet、双面设置和 DCS 专用着色器无法完整映射。"));
     auto reportPath = transaction.directory / "report.json";
     transaction.files.push_back(reportPath);
     report.update({{"format", "obj"},

@@ -50,8 +50,8 @@ std::optional<fs::path> paintDialog(HWND hwnd, const wchar_t* title, int kind) {
     if (kind != 1) {
         COMDLG_FILTERSPEC filter =
             kind == 2
-                ? COMDLG_FILTERSPEC{L"EDM 绘制工程", L"*.edmpaint.json"}
-                : COMDLG_FILTERSPEC{L"平面模板 / 图片", L"*.png;*.dds;*.tga;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff"};
+                ? COMDLG_FILTERSPEC{edm::trw(L"EDM 绘制工程"), L"*.edmpaint.json"}
+                : COMDLG_FILTERSPEC{edm::trw(L"平面模板 / 图片"), L"*.png;*.dds;*.tga;*.jpg;*.jpeg;*.bmp;*.tif;*.tiff"};
         dialog->SetFileTypes(1, &filter);
     }
     if (dialog->Show(hwnd) != S_OK)
@@ -195,10 +195,10 @@ struct PaintEditor::Impl {
     int lastPanelTool = -1;
     int paintMaxDimension = DefaultPaintMaxDimension;
     PaintBatchHistory history;
-    std::vector<PaintLayerInfo> layerInfos{{1, "图层 1", true, 1, true}};
+    std::vector<PaintLayerInfo> layerInfos{{1, edm::tr("图层 1"), true, 1, true}};
     uint64_t activeLayerId = 1, nextLayerId = 2;
     std::shared_ptr<PaintCanvas> layerControl;
-    std::string layerNameDraft = "图层 1";
+    std::string layerNameDraft = edm::tr("图层 1");
     float layerOpacityDraft = 1;
     Json layersDiagnosticResult;
     std::atomic_int activeMappingTasks{0};
@@ -210,7 +210,7 @@ struct PaintEditor::Impl {
     bool surfacePending = false, preserveAlpha = true;
     float radius = .1f, hardness = .65f, opacity = 1;
     F4 color{.88f, .12f, .09f, 1};
-    std::string search, status = "选择画笔，直接在模型上绘制；贴图会自动匹配。", error;
+    std::string search, status = edm::tr("选择画笔，直接在模型上绘制；贴图会自动匹配。"), error;
     std::string liveryName = "EDM Studio painted livery";
     std::optional<PaintHit> previousHit;
     ImVec2 previousScreen{};
@@ -318,7 +318,7 @@ struct PaintEditor::Impl {
         return busy() || strokePending();
     }
     StrokeContext frameContext(const Renderer& renderer, ImVec2 origin, ImVec2 size) const {
-        require(size.x > 0 && size.y > 0 && surface, "当前绘制视口尚未就绪");
+        require(size.x > 0 && size.y > 0 && surface, edm::tr("当前绘制视口尚未就绪"));
         StrokeContext context;
         context.inverse = (renderer.camera.projection(size.x / size.y) * renderer.camera.view()).inverse();
         context.eye = renderer.camera.eye();
@@ -349,7 +349,7 @@ struct PaintEditor::Impl {
                 previous.brush.preserveAlpha == context.brush.preserveAlpha)
                 return strokeContexts.rbegin()->first;
         }
-        require(strokeContexts.size() < 4096, "画笔视角快照积压过多，请取消此笔后降低移动速度");
+        require(strokeContexts.size() < 4096, edm::tr("画笔视角快照积压过多，请取消此笔后降低移动速度"));
         const auto id = ++nextStrokeContext;
         strokeContexts.emplace(id, std::move(context));
         peakStrokeContexts = std::max(peakStrokeContexts, strokeContexts.size());
@@ -372,7 +372,7 @@ struct PaintEditor::Impl {
         return std::clamp(context.brush.radius * .35 / worldPerPixel, .5, 64.);
     }
     void beginQueuedStroke(StrokeContext context, PaintStrokePoint point, double spacing) {
-        require(!controlsBusy(), "请等待当前画笔完成");
+        require(!controlsBusy(), edm::tr("请等待当前画笔完成"));
         requireWritableLayer();
         ensureAliases();
         if (pendingTemplate)
@@ -394,7 +394,7 @@ struct PaintEditor::Impl {
         auto id = rememberContext(std::move(context));
         strokePath.begin(point, spacing, id);
         try {
-            history.begin("自动多贴图连续画笔");
+            history.begin(edm::tr("自动多贴图连续画笔"));
         } catch (...) {
             strokePath.cancel();
             strokeContexts.clear();
@@ -512,7 +512,7 @@ struct PaintEditor::Impl {
                 strokeCanvas.reset();
                 previousHit.reset();
                 status =
-                    "笔划完成 · 自动写入 " + std::to_string(changedCanvases.size()) + " 张贴图 · 可一次撤销";
+                    edm::tr("笔划完成 · 自动写入 ") + std::to_string(changedCanvases.size()) + edm::tr(" 张贴图 · 可一次撤销");
             }
         } catch (...) {
             cancelQueuedStroke();
@@ -543,7 +543,7 @@ struct PaintEditor::Impl {
         return !work.empty();
     }
     template <class F> void start(F function, bool duringStroke = false, std::function<void()> cleanup = {}) {
-        require(!strokePending() || duringStroke, "正在补齐本笔轨迹，请完成后再操作");
+        require(!strokePending() || duringStroke, edm::tr("正在补齐本笔轨迹，请完成后再操作"));
         auto item = std::make_shared<Work>();
         item->cleanup = std::move(cleanup);
         work.push_back(item);
@@ -619,7 +619,7 @@ struct PaintEditor::Impl {
                 surface = result;
                 surfaceArgs = pose;
                 surfacePending = false;
-                status = "绘制表面已就绪 · 相机移动不会重建几何";
+                status = edm::tr("绘制表面已就绪 · 相机移动不会重建几何");
             };
         });
     }
@@ -634,7 +634,7 @@ struct PaintEditor::Impl {
         if (!scene || busy())
             return;
         require(paintable(material),
-                "编号图集由动态编号控制，请选择机体漫反射材质；当前材质没有可绘制表面。");
+                edm::tr("编号图集由动态编号控制，请选择机体漫反射材质；当前材质没有可绘制表面。"));
         auto source = scene;
         auto skin = livery;
         auto extra = textureDirectory;
@@ -642,7 +642,7 @@ struct PaintEditor::Impl {
         int selected = canvasIndex(material);
         uint64_t gen = generation;
         start([this, source, skin, extra, selected, path, gen](Progress p, const std::atomic_bool* cancel) {
-            p("读取绘制模板…");
+            p(edm::tr("读取绘制模板…"));
             PaintImage image;
             std::string imageName;
             if (path) {
@@ -656,7 +656,7 @@ struct PaintEditor::Impl {
                     imageName = texture->key();
                 } else {
                     image = PaintImage(2048, 2048);
-                    imageName = "空白 2048×2048 模板";
+                    imageName = edm::tr("空白 2048×2048 模板");
                 }
             }
             require(!*cancel, "Cancelled");
@@ -670,21 +670,21 @@ struct PaintEditor::Impl {
                     if (index != selected)
                         total += entry.canvas->storageBytes();
                 require(total <= 2ull * 1024 * 1024 * 1024,
-                        "编辑贴图超过 2 GiB 预算，请先保存工程再开始新材质。");
+                        edm::tr("编辑贴图超过 2 GiB 预算，请先保存工程再开始新材质。"));
                 entries[selected] = Entry{canvas, {}, imageName, {}};
                 history.clear();
                 canvasOptionsOpen = false;
                 saved = false;
-                status = "模板已载入 · 直接在模型表面绘制";
+                status = edm::tr("模板已载入 · 直接在模型表面绘制");
                 tool = 1;
             };
         });
     }
     void loadMappingImage(Renderer& renderer, const fs::path& path, int imageTool = 2) {
-        require(!busy(), "请等待当前绘制任务完成");
+        require(!busy(), edm::tr("请等待当前绘制任务完成"));
         auto gen = generation;
         start([this, &renderer, path, gen, imageTool](Progress p, const std::atomic_bool* cancel) {
-            p("读取图片与预览…");
+            p(edm::tr("读取图片与预览…"));
             auto image = std::make_shared<PaintImage>(PaintImage::load(ImageSource{path}, 8192));
             require(!*cancel, "Cancelled");
             // The image brush preview and bake must read identical decoded pixels. A separately
@@ -705,14 +705,14 @@ struct PaintEditor::Impl {
                 } else
                     projectionResult = Json();
                 projectionOverlay = true;
-                status = imageTool == 3 ? "图片已就绪 · 在视口中拖动定位，再应用相机投影"
-                                        : "图片画笔已就绪 · 移到模型表面预览，左键单击盖印";
+                status = imageTool == 3 ? edm::tr("图片已就绪 · 在视口中拖动定位，再应用相机投影")
+                                        : edm::tr("图片画笔已就绪 · 移到模型表面预览，左键单击盖印");
                 tool = imageTool;
             };
         });
     }
     void alignWrap() {
-        require(surface && surfaceArgs == currentArgs, "当前动画姿态的绘制表面尚未就绪");
+        require(surface && surfaceArgs == currentArgs, edm::tr("当前动画姿态的绘制表面尚未就绪"));
         auto [lo, hi] = surface->bounds(-1);
         V3 center = (lo + hi) * .5;
         for (int i = 0; i < 3; ++i)
@@ -750,7 +750,7 @@ struct PaintEditor::Impl {
     CameraProjectionOptions projectionOptions(const Renderer& renderer) const {
         auto dimensions = renderer.viewportMetrics();
         int width = dimensions.at("width").get<int>(), height = dimensions.at("height").get<int>();
-        require(width > 0 && height > 0, "模型视口尚未就绪");
+        require(width > 0 && height > 0, edm::tr("模型视口尚未就绪"));
         CameraProjectionOptions options;
         options.material = -1;
         options.viewportAspect = float(width) / height;
@@ -773,7 +773,7 @@ struct PaintEditor::Impl {
                               verifyUndoRedo, true);
     }
     void saveProject(const fs::path& directory) {
-        require(!controlsBusy(), "请先完成绘制任务");
+        require(!controlsBusy(), edm::tr("请先完成绘制任务"));
         auto images = snapshot();
         auto layers = layerSnapshot();
         auto source = scene;
@@ -789,30 +789,30 @@ struct PaintEditor::Impl {
                     return;
                 lastSavedProject = wide(result.at("directory").get<std::string>());
                 lastSavedProject /= "project.edmpaint.json";
-                status = "已保存：" + result.at("directory").get<std::string>();
+                status = edm::tr("已保存：") + result.at("directory").get<std::string>();
                 saved = true;
             };
         });
     }
     void openProject(Renderer& renderer, const fs::path& path) {
-        require(!controlsBusy(), "请先完成绘制任务");
+        require(!controlsBusy(), edm::tr("请先完成绘制任务"));
         auto source = renderer.model->scene;
         auto device = renderer.device;
         auto gen = generation;
         start([this, &renderer, source, device, path, gen](Progress p, const std::atomic_bool* cancel) {
-            p("读取完整绘制工程与基础涂装…");
+            p(edm::tr("读取完整绘制工程与基础涂装…"));
             auto restoredScene = restorePaintAssembly(source, path, p, cancel);
             auto manifest = fs::is_directory(path) ? path / "project.edmpaint.json" : path;
             auto document =
                 std::make_shared<PaintProjectDocument>(loadPaintDocument(*restoredScene, manifest, cancel));
             auto preparedLayers = document->layers.empty()
-                                      ? std::vector<PaintLayerInfo>{{1, "新绘制图层", true, 1, true}}
+                                      ? std::vector<PaintLayerInfo>{{1, edm::tr("新绘制图层"), true, 1, true}}
                                       : document->layers;
             auto preparedActive = document->layers.empty() ? uint64_t(1) : document->activeLayer;
             auto preparedControl = std::make_shared<PaintCanvas>(PaintImage(1, 1));
             preparedControl->enableLayers(preparedLayers, preparedActive);
             if (document->layers.empty())
-                document->warnings.push_back("旧工程的平面绘制作为底图保留，新改动写入新图层。");
+                document->warnings.push_back(edm::tr("旧工程的平面绘制作为底图保留，新改动写入新图层。"));
             auto prepared = restoredScene == source
                                 ? std::shared_ptr<GpuModel>{}
                                 : GpuModel::prepare(device.Get(), restoredScene, cancel, p);
@@ -846,7 +846,7 @@ struct PaintEditor::Impl {
                             for (const auto& tile : layer.tiles)
                                 bytes += tile.image.rgba.size();
                         require(bytes <= 2ull * 1024 * 1024 * 1024 - loadedLayerBytes,
-                                "独立物体的图层展开后超过 2 GiB 编辑预算");
+                                edm::tr("独立物体的图层展开后超过 2 GiB 编辑预算"));
                         loadedLayerBytes += bytes;
                         cached = std::make_shared<PaintCanvas>(PaintImage(1, 1));
                         cached->restoreLayers(*found->second);
@@ -855,12 +855,12 @@ struct PaintEditor::Impl {
                 } else {
                     const auto bytes = image->rgba.size() * 2;
                     require(bytes <= 2ull * 1024 * 1024 * 1024 - loadedLayerBytes,
-                            "旧工程转换为图层后超过 2 GiB 编辑预算");
+                            edm::tr("旧工程转换为图层后超过 2 GiB 编辑预算"));
                     loadedLayerBytes += bytes;
                     canvas = std::make_shared<PaintCanvas>(*image);
-                    canvas->enableLayers({{1, "新绘制图层", true, 1, true}}, 1);
+                    canvas->enableLayers({{1, edm::tr("新绘制图层"), true, 1, true}}, 1);
                 }
-                (*loaded)[i] = Entry{std::move(canvas), {}, "绘制工程", {}};
+                (*loaded)[i] = Entry{std::move(canvas), {}, edm::tr("绘制工程"), {}};
             }
             document->images.clear();
             return [this, &renderer, loaded, document, restoredScene, prepared, gen, preparedControl,
@@ -920,7 +920,7 @@ struct PaintEditor::Impl {
                 document->layerCanvases.clear();
                 pendingAppearance = std::move(*document);
                 saved = true;
-                status = "工程已打开 · 底图与涂装图层已恢复";
+                status = edm::tr("工程已打开 · 底图与涂装图层已恢复");
                 for (const auto& warning : pendingAppearance->warnings)
                     status += "\n" + warning;
             };
@@ -965,7 +965,7 @@ void PaintEditor::reset(Renderer& renderer) {
     renderer.decalPreview = {};
 }
 void PaintEditor::invalidateSurface(Renderer& renderer) {
-    require(!busy(), "请等待当前绘制任务完成");
+    require(!busy(), edm::tr("请等待当前绘制任务完成"));
     auto& p = *impl;
     ++p.generation;
     p.surface.reset();
@@ -976,12 +976,12 @@ void PaintEditor::invalidateSurface(Renderer& renderer) {
     renderer.decalPreview = {};
 }
 void PaintEditor::extendScene(Renderer& renderer) {
-    require(renderer.model && !busy(), "无法在绘制期间改变挂载模型");
+    require(renderer.model && !busy(), edm::tr("无法在绘制期间改变挂载模型"));
     auto& p = *impl;
     require(!p.scene || (p.scene->source == renderer.model->scene->source &&
                          p.scene->materials.size() <= renderer.model->scene->materials.size() &&
                          p.scene->meshes.size() <= renderer.model->scene->meshes.size()),
-            "外挂场景必须保留已有材质和网格索引");
+            edm::tr("外挂场景必须保留已有材质和网格索引"));
     p.scene = renderer.model->scene;
     // Existing canonical IDs retain their original first material, so canvas/undo keys remain stable.
     auto oldAliases = p.canonicalIds;
@@ -989,7 +989,7 @@ void PaintEditor::extendScene(Renderer& renderer) {
     p.ensureAliases();
     std::copy(oldAliases.begin(), oldAliases.end(), p.canonicalIds.begin());
     invalidateSurface(renderer);
-    p.status = "外挂已连接 · 可直接在机体和外挂表面绘制";
+    p.status = edm::tr("外挂已连接 · 可直接在机体和外挂表面绘制");
 }
 void PaintEditor::quiesce() {
     impl->stop();
@@ -1001,23 +1001,23 @@ void PaintEditor::quiesce() {
 }
 void PaintEditor::compactScene(Renderer& renderer, std::shared_ptr<const Scene> scene,
                                const std::vector<int>& materialMap) {
-    require(scene && impl->scene && !busy(), "请等待当前绘制任务完成");
+    require(scene && impl->scene && !busy(), edm::tr("请等待当前绘制任务完成"));
     auto& p = *impl;
-    require(materialMap.size() == p.scene->materials.size(), "无效的卸载材质映射");
+    require(materialMap.size() == p.scene->materials.size(), edm::tr("无效的卸载材质映射"));
     p.ensureAliases();
     std::vector<int> aliases(scene->materials.size(), -1);
     std::map<int, int> canonical;
     for (int old = 0; old < int(materialMap.size()); ++old) {
         const int next = materialMap[old];
-        require(next >= -1 && next < int(aliases.size()), "无效的卸载材质索引");
+        require(next >= -1 && next < int(aliases.size()), edm::tr("无效的卸载材质索引"));
         if (next < 0)
             continue;
-        require(aliases[next] == -1, "重复的卸载材质索引");
+        require(aliases[next] == -1, edm::tr("重复的卸载材质索引"));
         int key = p.canvasIndex(old);
         int preferred = materialMap.at(key);
         aliases[next] = canonical.try_emplace(key, preferred < 0 ? next : preferred).first->second;
     }
-    require(std::find(aliases.begin(), aliases.end(), -1) == aliases.end(), "不完整的卸载材质映射");
+    require(std::find(aliases.begin(), aliases.end(), -1) == aliases.end(), edm::tr("不完整的卸载材质映射"));
     std::map<int, Impl::Entry> entries;
     for (auto [old, next] : canonical)
         if (auto it = p.entries.find(old); it != p.entries.end()) {
@@ -1034,7 +1034,7 @@ void PaintEditor::compactScene(Renderer& renderer, std::shared_ptr<const Scene> 
     auto remap = [&](int index) {
         return index >= 0 && index < int(materialMap.size()) ? materialMap[index] : -1;
     };
-    std::string status = "外挂已卸载 · 保留物体的绘制内容与撤销记录已保留";
+    std::string status = edm::tr("外挂已卸载 · 保留物体的绘制内容与撤销记录已保留");
     p.history.remapMaterials(materialMap, retained);
     p.material = remap(p.material);
     p.pendingTemplateTarget = remap(p.pendingTemplateTarget);
@@ -1094,11 +1094,11 @@ bool PaintEditor::hasEdits() const {
     return !impl->entries.empty() && !impl->saved;
 }
 PaintSnapshot PaintEditor::snapshot() const {
-    require(!busy(), "绘制任务尚未完成，请稍后导出");
+    require(!busy(), edm::tr("绘制任务尚未完成，请稍后导出"));
     return impl->snapshot();
 }
 PaintLayerSnapshotMap PaintEditor::layerSnapshot() const {
-    require(!busy(), "绘制任务尚未完成，请稍后保存图层");
+    require(!busy(), edm::tr("绘制任务尚未完成，请稍后保存图层"));
     return impl->layerSnapshot();
 }
 std::optional<PaintProjectDocument> PaintEditor::takeRestoredAppearance() {
@@ -1109,7 +1109,7 @@ std::optional<PaintProjectDocument> PaintEditor::takeRestoredAppearance() {
 void PaintEditor::recover(const fs::path& directory) const {
     if (!hasEdits())
         return;
-    require(!busy(), "绘制任务尚未结束");
+    require(!busy(), edm::tr("绘制任务尚未结束"));
     auto& p = *impl;
     savePaintRecovery(*p.scene, p.snapshot(), directory, {}, nullptr, p.livery, p.textureDirectory,
                       p.layerSnapshot());
@@ -1203,7 +1203,7 @@ bool PaintEditor::exercise(Renderer& renderer, const std::string& material, cons
     auto [materialMin, materialMax] = p.surface->bounds(p.material);
     brush.radius = std::clamp((materialMax - materialMin).norm() * .005, .005, .1);
     brush.color = {.98f, .03f, .05f, 1};
-    canvas.beginStroke("诊断画笔");
+    canvas.beginStroke(edm::tr("诊断画笔"));
     auto started = Clock::now();
     auto stats = paintBrush(canvas, *p.surface, *hit, brush, eye);
     canvas.endStroke();
@@ -1219,7 +1219,7 @@ bool PaintEditor::exercise(Renderer& renderer, const std::string& material, cons
     canvas.image().savePNG(output);
     p.strokePixels = stats.pixels;
     p.saved = false;
-    p.status = "画笔 / 撤销 / 重做 / GPU 像素回读已验证";
+    p.status = edm::tr("画笔 / 撤销 / 重做 / GPU 像素回读已验证");
     p.diagnosticResult = {{"painted_pixels", stats.pixels},
                           {"brush_seconds", elapsed},
                           {"gpu_pixels_match", equal},
@@ -1263,7 +1263,7 @@ bool PaintEditor::exerciseWrap(Renderer& renderer, const fs::path& image, const 
                               {"undo_redo_match", true},
                               {"png", pathString(output)},
                               {"source_image", pathString(image)}};
-    p.status = "贴花 / 撤销 / 重做 / GPU 像素回读已验证";
+    p.status = edm::tr("贴花 / 撤销 / 重做 / GPU 像素回读已验证");
     p.wrapDiagnosticStage = 3;
     return true;
 }
@@ -1307,7 +1307,7 @@ bool PaintEditor::exerciseProjection(Renderer& renderer, const fs::path& image, 
                                     {"png", pathString(output)},
                                     {"source_image", pathString(image)}};
     p.projectionOverlay = false;
-    p.status = "相机投影 / 撤销 / 重做 / GPU 像素回读已验证";
+    p.status = edm::tr("相机投影 / 撤销 / 重做 / GPU 像素回读已验证");
     p.projectionDiagnosticStage = 3;
     return true;
 }
@@ -1562,7 +1562,7 @@ bool PaintEditor::viewport(Renderer& renderer, ImVec2 origin, ImVec2 size, bool 
             draw->AddLine({center.x - 5, center.y}, {center.x + 5, center.y}, border, 1.5f);
             draw->AddLine({center.x, center.y - 5}, {center.x, center.y + 5}, border, 1.5f);
             draw->AddText({origin.x + 16, origin.y + 38}, IM_COL32(178, 217, 240, 240),
-                          "图片定位预览 · 左键拖动 · 自动写入覆盖位置的贴图");
+                          edm::tr("图片定位预览 · 左键拖动 · 自动写入覆盖位置的贴图"));
             return consume;
         }
         if (p.tool == 2) {

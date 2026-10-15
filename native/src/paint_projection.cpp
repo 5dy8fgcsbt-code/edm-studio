@@ -13,7 +13,7 @@ PaintMappingReport applyCameraProjection(const PaintSurface& surface, PaintCanva
                 options.size[1] > 1e-8 && std::isfinite(options.viewportAspect) &&
                 options.viewportAspect > 1e-8 && std::isfinite(options.rotationRadians),
             "Invalid projected image placement");
-    Operation operation(canvas, "相机图片投影", options.limits, std::move(progress), cancel,
+    Operation operation(canvas, edm::tr("相机图片投影"), options.limits, std::move(progress), cancel,
                         options.externalStroke);
     double cosine = std::cos(options.rotationRadians), sine = std::sin(options.rotationRadians);
     std::vector<std::pair<double, uint32_t>> triangles;

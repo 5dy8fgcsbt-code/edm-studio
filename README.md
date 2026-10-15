@@ -1,4 +1,10 @@
-# EDM Studio Native 0.12.4
+# EDM Studio Native 0.13.0
+
+0.13.0 新增完整英文语言包。窗口右上方的语言菜单可选择 **简体中文 / English**，选择后自动保存，重启生效；重启前请先保存绘制工程。语言仅影响界面、提示和生成的默认名称，不会翻译模型节点、材质名、涂装名称、路径或 Lua 配置键。
+
+**English:** Select **English** in the language menu at the top right, save your paint project, then restart. The UI, painting tools, animation analysis, dialogs and export messages are translated. Model names, material names, user-created layer names, livery names and Lua keys are kept unchanged. The GUI saves your choice; the CLI accepts `--language en-US` after the model path. Use `--language zh-CN` for Chinese.
+
+英文包位于 `native/locales/en-US.json`；发布包放在 EXE 同目录的 `locales/en-US.json`。程序自带相同翻译，缺少外部文件时仍可使用英文；外部包无效或不匹配当前版本时，回退到内置翻译并显示提示。修改翻译后重启生效，不需要 Python 运行时。开发时执行 `tools/localization_catalog.py --generate` 更新内嵌文本，`--check` 检查覆盖率、格式占位符和生成文件同步状态。不要修改翻译键、`%` 格式占位符、`\u0000` 选项分隔符或 `##` 后的控件 ID。
 
 0.12.4 修复内部多档 LOD 同时显示和导出的问题：根据 EDM 距离范围自动选择最高精度分支，预览、绘制拾取、贴花遮挡、动画部件识别与四种模型导出保持一致，外挂各自选择最高精度。保留原始网格编号、材质和 UV，兼容已有涂装工程；低精度网格不再上传 GPU。无需修改设置，重新打开 EDM 即可生效。Painter 使用普通 UV 工作流的说明见[导出格式](docs/EXPORT_FORMATS.md)。
 

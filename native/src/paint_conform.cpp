@@ -470,7 +470,7 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
         if ((faces.size() & 1023) == 0) {
             checkConform(started, options, cancel);
             if (progress)
-                progress("连接曲面贴花的网格接缝 · " + std::to_string(faces.size()));
+                progress(edm::tr("连接曲面贴花的网格接缝 · ") + std::to_string(faces.size()));
         }
         Face face;
         face.patch.primitive = primitive;
@@ -585,7 +585,7 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
     std::vector<std::vector<uint32_t>> faceContacts;
     if (options.gapDistance > 0) {
         if (progress)
-            progress("查找曲面贴花可跨越的微小缝隙");
+            progress(edm::tr("查找曲面贴花可跨越的微小缝隙"));
         gapLinks = findGapLinks(faces, edges, surface, options, seamTolerance, maxBendDegrees,
                                started, cancel, *result);
         faceGaps.resize(faces.size());
@@ -594,7 +594,7 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
             faceGaps[gapLinks[k].b.face].push_back(k);
         }
         if (progress)
-            progress("查找贴花表面的边缘接触与轻微穿插");
+            progress(edm::tr("查找贴花表面的边缘接触与轻微穿插"));
         contactLinks = findContactLinks(faces, edges, gapLinks, surface, options, seamTolerance,
                                          maxBendDegrees, started, cancel, *result);
         faceContacts.resize(faces.size());
@@ -679,7 +679,7 @@ std::shared_ptr<const SurfaceDecalPatch> buildSurfaceDecalPatch(
         if ((steps++ & 1023) == 0) {
             checkConform(started, options, cancel);
             if (progress)
-                progress("沿模型曲面展开贴花 · " + std::to_string(steps));
+                progress(edm::tr("沿模型曲面展开贴花 · ") + std::to_string(steps));
         }
         const auto next = pending.top();
         pending.pop();

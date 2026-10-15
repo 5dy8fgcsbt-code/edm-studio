@@ -17,7 +17,7 @@ struct PartCandidate {
 };
 struct AnimationFinding {
     int argument = 0;
-    std::string part = "unknown", label = "未确定部件", location, motion;
+    std::string part = "unknown", label = edm::tr("未确定部件"), location, motion;
     double confidence = 0, maximumDisplacement = 0, meanDisplacement = 0;
     size_t movingSamples = 0, sampledVertices = 0, poses = 0;
     bool visibilityChanges = false, textureOnly = false;

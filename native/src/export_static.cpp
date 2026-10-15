@@ -363,9 +363,9 @@ ExportPayload bakeModelOnlyPayload(ExportPayload source, Progress progress, cons
         for (const auto& primitive : mesh.at("primitives"))
             baker.mesh(nodes[i], mesh, primitive, world, i);
         if (progress && i % 100 == 0)
-            progress("烘焙纯模型网格 " + std::to_string(baker.output.document["meshes"].size()));
+            progress(edm::tr("烘焙纯模型网格 ") + std::to_string(baker.output.document["meshes"].size()));
     }
-    require(baker.triangles > 0, "当前姿态没有可导出的三角网格");
+    require(baker.triangles > 0, edm::tr("当前姿态没有可导出的三角网格"));
     baker.output.document["buffers"] = Json::array({{{"byteLength", baker.output.buffer.size()}}});
     baker.output.report = std::move(source.report);
     baker.output.report.update({{"model_only", true},

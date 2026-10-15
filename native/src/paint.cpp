@@ -27,7 +27,7 @@ V3 vector(const F3& v) {
     return V3(v[0], v[1], v[2]);
 }
 void cancelled(const std::atomic_bool* cancel) {
-    require(!cancel || !cancel->load(), "涂装操作已取消");
+    require(!cancel || !cancel->load(), edm::tr("涂装操作已取消"));
 }
 void imageResult(HRESULT result, const char* operation) {
     require(SUCCEEDED(result), std::string(operation) + " failed: " + std::to_string(uint32_t(result)));
@@ -109,7 +109,7 @@ std::optional<std::array<double, 4>> brushUVBounds(const PaintTriangle& face, co
 
 PaintImage::PaintImage(uint32_t w, uint32_t h, std::array<uint8_t, 4> color) : width(w), height(h) {
     require(w && h && w <= 16384 && h <= 16384 && uint64_t(w) * h <= 64ull * 1024 * 1024,
-            "涂装画布尺寸超限（最多 6400 万像素）");
+            edm::tr("涂装画布尺寸超限（最多 6400 万像素）"));
     rgba.resize(size_t(w) * h * 4);
     for (size_t i = 0; i < rgba.size(); i += 4)
         std::copy(color.begin(), color.end(), rgba.begin() + i);
@@ -122,10 +122,10 @@ void PaintImage::validate() const {
 PaintImage PaintImage::load(const ImageSource& source, size_t maxSize) {
     auto path = source.entry.empty() ? source.path : fs::path(wide(source.entry));
     require(lower(pathString(path.extension())) != ".psd",
-            "PSD 图层模板暂不支持，请先从图像编辑器导出为 PNG 或 TGA 平面模板。");
+            edm::tr("PSD 图层模板暂不支持，请先从图像编辑器导出为 PNG 或 TGA 平面模板。"));
     auto loaded = loadTexture(source, maxSize);
     auto* image = loaded->pixels.GetImage(loaded->firstMip, 0, 0);
-    require(image != nullptr, "模板没有可用图像");
+    require(image != nullptr, edm::tr("模板没有可用图像"));
     DirectX::ScratchImage decoded, converted;
     if (DirectX::IsCompressed(image->format)) {
         imageResult(DirectX::Decompress(*image, DXGI_FORMAT_R8G8B8A8_UNORM, decoded), "Decode paint DDS");
@@ -594,7 +594,7 @@ PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args,
     impl->primitives.reserve(possible);
     impl->centers.reserve(possible);
     if (progress)
-        progress("准备当前动画姿态的绘制表面…");
+        progress(edm::tr("准备当前动画姿态的绘制表面…"));
     for (uint32_t mi = 0; mi < impl->scene->meshes.size(); ++mi) {
         cancelled(cancel);
         const auto& mesh = impl->scene->meshes[mi];
@@ -649,7 +649,7 @@ PaintSurface::PaintSurface(std::shared_ptr<const Scene> scene, const Args& args,
     }
     cancelled(cancel);
     if (progress)
-        progress("构建绘制拾取加速结构（" + std::to_string(impl->primitives.size()) + " 个三角面）…");
+        progress(edm::tr("构建绘制拾取加速结构（") + std::to_string(impl->primitives.size()) + edm::tr(" 个三角面）…"));
     impl->order.resize(impl->primitives.size());
     std::iota(impl->order.begin(), impl->order.end(), 0);
     impl->nodes.reserve(impl->primitives.size() / 4 + 1);
@@ -815,7 +815,7 @@ std::pair<V3, V3> PaintSurface::bounds(int material) const {
         box.include(bounds.hi);
         found = true;
     }
-    require(found, "此材质没有可绘制表面");
+    require(found, edm::tr("此材质没有可绘制表面"));
     return {box.lo, box.hi};
 }
 
@@ -829,14 +829,14 @@ uint64_t rasterizePaintTriangle(const PaintTriangle& triangle, uint32_t width, u
     double du1 = triangle.uv[1][0] - u0, dv1 = triangle.uv[1][1] - v0;
     double du2 = triangle.uv[2][0] - u0, dv2 = triangle.uv[2][1] - v0;
     double determinant = du1 * dv2 - dv1 * du2;
-    require(std::isfinite(determinant), "表面包含非有限 UV，无法绘制");
+    require(std::isfinite(determinant), edm::tr("表面包含非有限 UV，无法绘制"));
     if (std::abs(determinant) < 1e-20)
         return 0;
     double minU = u0, minV = v0, maxU = u0, maxV = v0;
     for (const auto& uv : triangle.uv) {
         require(std::isfinite(uv[0]) && std::isfinite(uv[1]) && std::abs(uv[0]) <= 1e6 &&
                     std::abs(uv[1]) <= 1e6,
-                "UV 坐标超出涂装绘制范围");
+                edm::tr("UV 坐标超出涂装绘制范围"));
         minU = std::min(minU, double(uv[0]));
         minV = std::min(minV, double(uv[1]));
         maxU = std::max(maxU, double(uv[0]));
@@ -854,7 +854,7 @@ uint64_t rasterizePaintTriangle(const PaintTriangle& triangle, uint32_t width, u
         return 0;
     double tiles =
         std::max(1., std::ceil(maxU) - std::floor(minU)) * std::max(1., std::ceil(maxV) - std::floor(minV));
-    require(tiles <= options.maxRepeatTiles, "UV 重复次数过多，请缩小绘制区域");
+    require(tiles <= options.maxRepeatTiles, edm::tr("UV 重复次数过多，请缩小绘制区域"));
     int64_t x0 = int64_t(std::ceil(minU * width - .5)), x1 = int64_t(std::floor(maxU * width - .5));
     int64_t y0 = int64_t(std::ceil(minV * height - .5)), y1 = int64_t(std::floor(maxV * height - .5));
     if (x1 < x0 || y1 < y0)
@@ -862,7 +862,7 @@ uint64_t rasterizePaintTriangle(const PaintTriangle& triangle, uint32_t width, u
     require(x0 >= INT_MIN && x1 <= INT_MAX && y0 >= INT_MIN && y1 <= INT_MAX,
             "UV raster exceeds integer range");
     require(uint64_t(x1 - x0 + 1) * uint64_t(y1 - y0 + 1) <= options.maxPixels,
-            "单个表面的 UV 栅格范围过大，请缩小绘制区域");
+            edm::tr("单个表面的 UV 栅格范围过大，请缩小绘制区域"));
     uint64_t samples = 0;
     double inverse = 1 / determinant;
     for (int64_t y = y0; y <= y1; ++y) {
@@ -966,7 +966,7 @@ PaintStats paintBrush(PaintCanvas& canvas, const PaintSurface& surface, const Pa
             continue;
         PaintRasterOptions options;
         options.cancel = cancel;
-        require(rasterSamples < brush.maxPixels, "单次画笔覆盖过大，请缩小笔刷半径");
+        require(rasterSamples < brush.maxPixels, edm::tr("单次画笔覆盖过大，请缩小笔刷半径"));
         options.maxPixels = brush.maxPixels - rasterSamples;
         options.uvBounds = uvBounds;
         rasterSamples += rasterizePaintTriangle(

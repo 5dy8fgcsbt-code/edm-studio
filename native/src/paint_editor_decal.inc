@@ -38,7 +38,7 @@ bool positionDecal(Renderer& renderer, ImVec2 origin, ImVec2 size, PaintStrokePo
 }
 SurfaceDecalOptions decalOptions() const {
     require(decalHit && surface && surfaceArgs == currentArgs && decalPose == currentArgs,
-            "请将图片画笔移到当前模型表面，确定盖印位置。");
+            edm::tr("请将图片画笔移到当前模型表面，确定盖印位置。"));
     SurfaceDecalOptions options;
     options.center = decalHit->position;
     options.normal = decalHit->normal;
@@ -160,7 +160,7 @@ void updateDecalPreview(Renderer& renderer) {
 }
 void startDecal(Renderer& renderer, bool verify = false) {
     const auto options = decalOptions();
-    require(bool(mappingImage), "请先加载贴花图片。");
+    require(bool(mappingImage), edm::tr("请先加载贴花图片。"));
     decalSuppressed = true;
     decalSuppressedScreen = decalScreen;
     renderer.decalPreview.active = false;
@@ -215,12 +215,12 @@ void decalViewport(Renderer& renderer, ImVec2 origin, ImVec2 size, bool hovered)
     if (hovered && mappingImage) {
         PaintDrawClipScope clip(ImGui::GetWindowDrawList(), origin, {origin.x + size.x, origin.y + size.y});
         ImGui::GetWindowDrawList()->AddText({origin.x + 16, origin.y + 38}, IM_COL32(178, 217, 240, 240),
-                                            decalConforming ? "曲面贴花 · 左键盖印 · [ / ] 大小 · Q / E 旋转"
-                                                            : "平面贴花 · 左键盖印 · [ / ] 大小 · Q / E 旋转");
+                                            decalConforming ? edm::tr("曲面贴花 · 左键盖印 · [ / ] 大小 · Q / E 旋转")
+                                                            : edm::tr("平面贴花 · 左键盖印 · [ / ] 大小 · Q / E 旋转"));
         if (decalConforming && decalHit && !decalSuppressed && !renderer.decalPreview.active &&
             !controlsBusy())
             ImGui::GetWindowDrawList()->AddText(
                 {origin.x + 16, origin.y + 60}, IM_COL32(223, 190, 122, 240),
-                conformPreviewError.empty() ? "正在计算曲面贴合…" : "此处无法展开，请缩小贴花或调整落点");
+                conformPreviewError.empty() ? edm::tr("正在计算曲面贴合…") : edm::tr("此处无法展开，请缩小贴花或调整落点"));
     }
 }

@@ -13,7 +13,7 @@ class PaintBatchHistory {
     ~PaintBatchHistory();
     PaintBatchHistory(const PaintBatchHistory&) = delete;
     PaintBatchHistory& operator=(const PaintBatchHistory&) = delete;
-    void begin(std::string label = "连续表面画笔");
+    void begin(std::string label = edm::tr("连续表面画笔"));
     // Opens this canvas's stroke on its first touch; aliases sharing one canvas are opened only once.
     PaintCanvas& touch(int material, std::shared_ptr<PaintCanvas> canvas);
     // One metadata-only anchor per batch. It has independent undo tokens and never contributes a

@@ -237,7 +237,7 @@ Json evaluateLua(const std::string& text, const fs::path& path, const std::strin
     } cleanup{input, output};
     writeJson(input, {{"text", text}, {"path", pathString(path)}, {"entry", entry}, {"context", context}});
     std::wstring command = L"\"" + std::wstring(exe) + L"\" --lua-worker \"" + input.wstring() + L"\" \"" +
-                           output.wstring() + L"\"";
+                           output.wstring() + L"\" --language " + wide(languageCode(language()));
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESHOWWINDOW;
@@ -272,7 +272,7 @@ Json evaluateLua(const std::string& text, const fs::path& path, const std::strin
     auto bytes = readFile(output, 16000000);
     auto result = Json::parse(bytes);
     require(result.value("ok", false),
-            "动态 Lua 求值失败：" + result.value("error", "worker exited without result"));
+            edm::tr("动态 Lua 求值失败：") + result.value("error", "worker exited without result"));
     return result.at("result");
 }
 } // namespace edm

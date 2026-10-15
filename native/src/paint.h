@@ -64,7 +64,7 @@ class PaintCanvas {
     uint64_t revision() const;
     size_t historyBytes() const;
     std::optional<PaintRect> takeDirtyRect();
-    void beginStroke(std::string label = "画笔");
+    void beginStroke(std::string label = edm::tr("画笔"));
     bool endStroke();
     void cancelStroke() noexcept;
     // Preparation allocates snapshots/history capacity without changing either history stack.

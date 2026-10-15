@@ -20,7 +20,7 @@ struct TextureOverride {
 };
 struct Livery {
     fs::path path;
-    std::string entry, name, unit, origin = "手动选择";
+    std::string entry, name, unit, origin = edm::tr("手动选择");
     std::map<std::pair<std::string, int>, TextureOverride> textures;
     Args args;
     Json countries = Json::array(), evaluation;
@@ -33,7 +33,7 @@ struct Livery {
 Json evaluateLua(const std::string& text, const fs::path& path = {}, const std::string& entry = {},
                  const Json& context = Json::object());
 int luaWorker(const fs::path& request, const fs::path& response);
-Livery readLivery(fs::path path, std::string entry = "", std::string origin = "手动选择",
+Livery readLivery(fs::path path, std::string entry = "", std::string origin = edm::tr("手动选择"),
                   std::string unit = "", const Json& context = Json::object());
 std::vector<fs::path> installationPaths(const fs::path& source = {});
 fs::path modulePath(const fs::path& source);

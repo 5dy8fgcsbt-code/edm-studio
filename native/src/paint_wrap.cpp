@@ -21,7 +21,7 @@ PaintMappingReport applyCylindricalWrap(const PaintSurface& surface, PaintCanvas
     reference.normalize();
     V3 tangent = axis.cross(reference);
     double angleCenter = std::remainder(options.angleRadians, tau);
-    Operation operation(canvas, "贴花", options.limits, std::move(progress), cancel,
+    Operation operation(canvas, edm::tr("贴花"), options.limits, std::move(progress), cancel,
                         options.externalStroke);
 
     // Rays start outside the entire posed scene, including other materials that can occlude the target.

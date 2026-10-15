@@ -94,7 +94,7 @@ PaintMappingCandidates discover(const PaintSurface& surface, int material, int m
             if ((i & 1023) == 0) {
                 check();
                 if (progress && (i & 65535) == 0)
-                    progress("自动识别贴图 " + std::to_string(i) + "/" +
+                    progress(edm::tr("自动识别贴图 ") + std::to_string(i) + "/" +
                              std::to_string(surface.triangleCount()));
             }
             ++result.examinedTriangles;
